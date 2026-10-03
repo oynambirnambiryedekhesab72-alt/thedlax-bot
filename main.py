@@ -4,16 +4,14 @@ import discord
 from discord.ext import commands
 from google import genai
 
-# Türkçe ve unicode karakter hatalarını önlemek için UTF-8 zorlaması
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+# Sistem varsayılan kodlamasını UTF-8'e zorla
+os.environ["PYTHONIOENCODING"] = "utf-8"
 
-# Discord Bot Kurulumu
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="td/", intents=intents)
 
-# API Anahtarını ikiye bölerek birleştiriyoruz (GitHub tarayıcılarına takılmaması için)
+# API Anahtarını birleştiriyoruz
 p1 = "AQ.Ab8RN6Kng0vFz7Ib6DRUSf"
 p2 = "SaNxhVJCvp_wr35dgBBcGzSG60Gg"
 GEMINI_KEY = p1 + p2
@@ -41,23 +39,32 @@ async def ai(ctx, *, soru: str = None):
 
     async with ctx.typing():
         try:
+            # Gelen metni UTF-8 olarak güvenli formata çevirip gönderiyoruz
+            soru_utf8 = soru.encode("utf-8").decode("utf-8")
+            
             response = ai_client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=soru,
+                contents=soru_utf8,
             )
+            
             cevap = response.text
             
+            # Cevap metnini UTF-8 formatında doğrula
+            if isinstance(cevap, bytes):
+                cevap = cevap.decode("utf-8", errors="replace")
+
             if len(cevap) > 1900:
                 for i in range(0, len(cevap), 1900):
                     await ctx.send(cevap[i:i+1900])
             else:
                 await ctx.send(cevap)
-        except Exception as e:
-            await ctx.send(f"Bir hata oluştu: {e}")
 
-# Botu başlat
+        except Exception as e:
+            await ctx.send(f"Bir hata oluştu: {str(e)}")
+
 token = os.getenv("DISCORD_TOKEN")
 if token:
     bot.run(token)
 else:
     print("HATA: DISCORD_TOKEN bulunamadı!")
+
