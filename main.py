@@ -152,6 +152,61 @@ async def kilit_error(ctx, error):
         await ctx.send("❌ Benim **Kanalları Yönet** yetkim yok.")
 
 
+@bot.command(name="fake", aliases=["fakemesaj"])
+@commands.bot_has_permissions(manage_webhooks=True)
+async def fake(ctx, kisi: discord.Member, *, mesaj: str):
+    """Etiketlenen kişinin adı ve profil fotoğrafıyla mesaj at"""
+    mesaj = mesaj[:2000]
+
+    # Thread içindeyse webhook ana kanalda aranır
+    thread = None
+    kanal = ctx.channel
+    if isinstance(ctx.channel, discord.Thread):
+        thread = ctx.channel
+        kanal = ctx.channel.parent
+
+    # Kanalda botun webhook'u varsa onu kullan, yoksa oluştur
+    hooks = await kanal.webhooks()
+    hook = next(
+        (h for h in hooks if h.name == "THEDLAX-fake" and h.user and h.user.id == bot.user.id),
+        None,
+    )
+    if hook is None:
+        hook = await kanal.create_webhook(name="THEDLAX-fake")
+
+    kwargs = {}
+    if thread is not None:
+        kwargs["thread"] = thread
+
+    try:
+        await hook.send(
+            content=mesaj,
+            username=kisi.display_name[:80],
+            avatar_url=kisi.display_avatar.url,
+            allowed_mentions=NO_PING,
+            **kwargs,
+        )
+    except discord.HTTPException:
+        await ctx.send("❌ Bu kişinin adıyla mesaj atılamadı (isim Discord kurallarına uymuyor olabilir).")
+        return
+
+    # Komut mesajını sil (yetki yoksa sessizce geç)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+@fake.error
+async def fake_error(ctx, error):
+    if isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Kişiyi bulamadım. Etiketle: `td!fake @kişi mesaj`")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Kullanım: `td!fake @kişi mesaj`")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Benim **Webhook Yönet** yetkim yok.")
+
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -220,4 +275,4 @@ token = os.getenv("DISCORD_TOKEN")
 if token:
     bot.run(token)
 else:
-    print("HATA: DISCORD_TOKEN bulunamadı!")
+    print("HATA: DISCORD_TOKEN bulunamadı!"))
