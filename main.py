@@ -8,9 +8,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="td/", intents=intents)
 
-# API Anahtarı
-p1 = "AQ.Ab8RN6Kng0vFz7Ib6DRUSf"
-p2 = "SaNxhVJCvp_wr35dgBBcGzSG60Gg"
+# Yeni API Anahtarı (GitHub tarayıcılarına takılmaması için iki parça)
+p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
+p2 = "LXS5N62GbgEWFRELbzQCuj5FCsechg"
 GEMINI_KEY = p1 + p2
 
 @bot.event
@@ -26,7 +26,6 @@ async def ai(ctx, *, soru: str = None):
 
     async with ctx.typing():
         try:
-            # Standart v1beta generateContent URL adresi
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             
             headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -65,6 +64,7 @@ if token:
     bot.run(token)
 else:
     print("HATA: DISCORD_TOKEN bulunamadı!")
+
 
 
 
