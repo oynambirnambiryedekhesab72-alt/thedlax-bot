@@ -26,14 +26,15 @@ async def ai(ctx, *, soru: str = None):
         return
 
     async with ctx.typing():
-        # Güncel 3.1 sürümü
+        # Denenecek modeller
         modeller = [
-            "gemini-3.1-flash",
-            "gemini-3.0-flash"
+            "gemini-1.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash"
         ]
         
         cevap = None
-        son_hata = ""
+        detayli_hata = ""
 
         for model in modeller:
             try:
@@ -54,10 +55,12 @@ async def ai(ctx, *, soru: str = None):
                     if cevap:
                         break
             except urllib.error.HTTPError as e:
-                son_hata = f"HTTP {e.code}: {e.reason}"
+                # Google'ın döndüğü gerçek hata metnini oku
+                hata_icerigi = e.read().decode('utf-8', errors='ignore')
+                detayli_hata = f"HTTP {e.code}: {hata_icerigi}"
                 continue
             except Exception as e:
-                son_hata = str(e)
+                detayli_hata = str(e)
                 continue
 
         if cevap:
@@ -67,7 +70,7 @@ async def ai(ctx, *, soru: str = None):
             else:
                 await ctx.send(cevap)
         else:
-            await ctx.send(f"API Yanıt Hatası: {son_hata}")
+            await ctx.send(f"**API Detaylı Hata:**\n```{detayli_hata[:1800]}```")
 
 # Botu başlat
 token = os.getenv("DISCORD_TOKEN")
