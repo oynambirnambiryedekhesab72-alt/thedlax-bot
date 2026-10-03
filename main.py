@@ -1,7 +1,12 @@
 import os
+import sys
 import discord
 from discord.ext import commands
 from google import genai
+
+# Türkçe ve unicode karakter hatalarını önlemek için UTF-8 zorlaması
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 # Discord Bot Kurulumu
 intents = discord.Intents.default()
@@ -56,4 +61,3 @@ if token:
     bot.run(token)
 else:
     print("HATA: DISCORD_TOKEN bulunamadı!")
-
