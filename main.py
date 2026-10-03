@@ -26,7 +26,8 @@ async def ai(ctx, *, soru: str = None):
 
     async with ctx.typing():
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+            # Model ismi gemini-1.5-flash olarak güncellendi
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             
             headers = {"Content-Type": "application/json; charset=utf-8"}
             
@@ -40,18 +41,14 @@ async def ai(ctx, *, soru: str = None):
                 ]
             }
             
-            # Doğrudan UTF-8 byte formatına çevirip gönderiyoruz (ASCII hatası verme ihtimali 0)
             data_bytes = json.dumps(payload, ensure_ascii=False).encode('utf-8')
             
             req = urllib.request.Request(url, data=data_bytes, headers=headers, method='POST')
             
             with urllib.request.urlopen(req) as response:
                 result_json = json.loads(response.read().decode('utf-8'))
-                
-                # Yanıtı çek
                 cevap = result_json['candidates'][0]['content']['parts'][0]['text']
 
-            # Discord 2000 karakter sınırı kontrolü
             if len(cevap) > 1900:
                 for i in range(0, len(cevap), 1900):
                     await ctx.send(cevap[i:i+1900])
@@ -67,4 +64,5 @@ if token:
     bot.run(token)
 else:
     print("HATA: DISCORD_TOKEN bulunamadı!")
+
 
