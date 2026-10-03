@@ -15,11 +15,10 @@ p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
 p2 = "LXS5N62GbgEWFRELbzQCuj5FCsechg"
 GEMINI_KEY = p1 + p2
 
-MODELLER = ["gemini-3.1-flash-lite", "gemini-3.6-flash"]
+MODELLER = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
 
 
 def gemini_sor(soru: str):
-    """Bloklamasın diye ayrı thread'de çalışır. (cevap, hata) döner."""
     hata = ""
     for model in MODELLER:
         try:
