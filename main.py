@@ -68,7 +68,6 @@ async def on_message(message):
         else:
             await message.channel.send(f"Efendim {message.author.mention}? Bana `td!ai [mesaj]` yazarak ulaşabilirsin.")
 
-    await bot.process_commands(message)
+TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
+bot.run(TOKEN)
 
-
-bot.run(os.environ.get("DISCORD_TOKEN"))
