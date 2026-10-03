@@ -8,7 +8,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="td/", intents=intents)
 
-# API Anahtarı (GitHub tarayıcılarına takılmaması için iki parça)
+# API Anahtarı
 p1 = "AQ.Ab8RN6Kng0vFz7Ib6DRUSf"
 p2 = "SaNxhVJCvp_wr35dgBBcGzSG60Gg"
 GEMINI_KEY = p1 + p2
@@ -26,7 +26,7 @@ async def ai(ctx, *, soru: str = None):
 
     async with ctx.typing():
         try:
-            # Güncel ve kararlı v1beta endpoint adresi
+            # Standart v1beta generateContent URL adresi
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             
             headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -41,18 +41,13 @@ async def ai(ctx, *, soru: str = None):
                 ]
             }
             
-            # Tamamen UTF-8 bayt formatına çevirip gönderiyoruz
             data_bytes = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-            
             req = urllib.request.Request(url, data=data_bytes, headers=headers, method='POST')
             
             with urllib.request.urlopen(req) as response:
                 result_json = json.loads(response.read().decode('utf-8'))
-                
-                # Yanıtı al
                 cevap = result_json['candidates'][0]['content']['parts'][0]['text']
 
-            # Discord mesaj uzunluğu sınırı kontrolü (2000 karakter)
             if len(cevap) > 1900:
                 for i in range(0, len(cevap), 1900):
                     await ctx.send(cevap[i:i+1900])
@@ -60,8 +55,6 @@ async def ai(ctx, *, soru: str = None):
                 await ctx.send(cevap)
 
         except urllib.error.HTTPError as e:
-            # HTTP hatalarını açıkça görelim
-            hata_detay = e.read().decode('utf-8')
             await ctx.send(f"API Yanıt Hatası ({e.code}): {e.reason}")
         except Exception as e:
             await ctx.send(f"Hata oluştu: {str(e)}")
@@ -72,6 +65,7 @@ if token:
     bot.run(token)
 else:
     print("HATA: DISCORD_TOKEN bulunamadı!")
+
 
 
 
