@@ -1,4 +1,4 @@
-import discord
+import os
 from discord.ext import commands
 
 # Bot Yetkileri (Intents)
@@ -69,5 +69,5 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# Token eklendi
-bot.run("MTU0MjA1OTY3MjI1OTc5NzA0Mg.GjhXC4.XqML2aOJg4okooGKTdwueOEHY_njKLujBWfjP0")
+
+bot.run(os.environ.get("DISCORD_TOKEN"))
