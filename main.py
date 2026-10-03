@@ -16,6 +16,13 @@ p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
 p2 = "LXS5N62GbgEWFRELbzQCuj5FCsechg"
 GEMINI_KEY = p1 + p2
 
+SISTEM = (
+    "Senin adın THEDLAX. Seni thedlax yarattı, sahibin odur. "
+    "Her zaman Türkçe konuş. Samimi, günlük dille ve çok KISA cevap ver, "
+    "en fazla 2-3 cümle. Robot gibi resmi konuşma, uzun açıklama yapma, "
+    "kullanıcı özellikle detay istemedikçe madde madde yazma."
+)
+
 NO_PING = discord.AllowedMentions.none()
 
 # AFK listesi: {kullanici_id: (sebep, zaman)}
@@ -44,7 +51,11 @@ async def ai(ctx, *, soru: str = None):
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
                 headers = {"Content-Type": "application/json; charset=utf-8"}
-                payload = {"contents": [{"parts": [{"text": soru}]}]}
+                payload = {
+                    "systemInstruction": {"parts": [{"text": SISTEM}]},
+                    "contents": [{"parts": [{"text": soru}]}],
+                    "generationConfig": {"maxOutputTokens": 400},
+                }
 
                 data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
