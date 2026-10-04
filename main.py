@@ -67,6 +67,7 @@ silinenler = {}       # {kanal_id: (yazar, icerik, zaman)}
 ai_gecmis = {}        # {(kanal_id, kullanici_id): {"mesajlar": [(rol, metin)], "son": zaman}}
 ai_son_soru = {}      # {kullanici_id: zaman}
 arkaplan_gorevleri = set()
+EK_KOMUTLAR = []   # ek.py buraya yeni komutların yardım satırını ekler
 
 
 # ----------------------------------------------------------------------
@@ -1039,6 +1040,7 @@ async def hatirlat(ctx, sure: str, *, mesaj: str):
 
 @bot.hybrid_command(name="fake", aliases=["fakemesaj"], usage="@kişi <mesaj>")
 @app_commands.describe(kisi="Taklit edilecek kişi", mesaj="Göndereceği mesaj")
+@commands.has_permissions(administrator=True)
 @commands.bot_has_permissions(manage_webhooks=True)
 async def fake(ctx, kisi: discord.Member, *, mesaj: str):
     """Etiketlenen kişinin adı ve profil fotoğrafıyla mesaj at"""
@@ -1090,7 +1092,9 @@ async def fake(ctx, kisi: discord.Member, *, mesaj: str):
 
 @fake.error
 async def fake_error(ctx, error):
-    if isinstance(error, commands.MemberNotFound):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Bu komutu sadece **Yönetici** yetkisi olanlar kullanabilir.")
+    elif isinstance(error, commands.MemberNotFound):
         await ctx.send("❌ Kişiyi bulamadım. Etiketle: `td!fake @kişi mesaj`")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("Kullanım: `td!fake @kişi mesaj`")
@@ -1168,10 +1172,12 @@ async def help_komutu(ctx):
             "`sor <soru>` Sihirli 8 top\n"
             "`hesapla <işlem>` Hesap makinesi\n"
             "`hatirlat <süre> <mesaj>` Hatırlatıcı\n"
-            "`fake @kişi <mesaj>` Kişinin adıyla mesaj"
+            "`fake @kişi <mesaj>` Kişinin adıyla mesaj (sadece Yönetici)"
         ),
         inline=False,
     )
+    if EK_KOMUTLAR:
+        embed.add_field(name="✨ Yeni Komutlar", value="\n".join(EK_KOMUTLAR)[:1000], inline=False)
     embed.set_footer(text="Yetki gereken komutlarda ilgili yetkin olmalı.")
     await ctx.send(embed=embed)
 
@@ -1245,6 +1251,14 @@ async def on_message(message):
         return
 
     await bot.process_commands(message)
+
+
+# ek.py: yeni komutlar hep oraya eklenir (main.py'ye bir daha dokunmana gerek yok)
+try:
+    import ek
+    ek.ekle(bot, globals())
+except Exception as e:
+    print(f"ek.py yüklenemedi: {e!r}")
 
 
 # Botu başlat
