@@ -1,4 +1,5 @@
 import os
+import re
 import ast
 import json
 import time
@@ -11,6 +12,18 @@ import urllib.error
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+SURUM = "1.3"
+DEGISIKLIKLER = (
+    "🧠 AI artık konuşmayı hatırlıyor, botu dondurmuyor, spam'e karşı 5 sn bekleme var\n"
+    "📬 AFK: ne kadar AFK kaldığını ve seni kimlerin etiketlediğini gösterir\n"
+    "💾 AFK, uyarılar ve hatırlatmalar bot yeniden başlayınca silinmez\n"
+    "⏱️ Süre yazımı kolaylaştı: `30s`, `5m`, `2h`, `1d`, `1h30m`\n"
+    "🔧 lock, unlock, gizle, goster ve yavasmod başka kanal için de çalışır\n"
+    "🧹 temizle: sadece seçtiğin kişinin mesajlarını silebilir\n"
+    "⚠️ warn: kişiye DM atar, 3 uyarıda otomatik susturur\n"
+    "📩 kick, ban ve timeout kişiye sebebiyle DM gönderir"
+)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -27,6 +40,11 @@ p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
 p2 = "LXS5N62GbgEWFRELbzQCuj5FCsechg"
 GEMINI_KEY = p1 + p2
 
+AI_MODELLER = ["gemini-3.1-flash-lite", "gemini-3.6-flash"]
+AI_BEKLEME = 5          # aynı kişi en az kaç saniye arayla soru sorabilir
+AI_HAFIZA_SURE = 1800   # sohbet hafızası kaç saniye tutulur
+AI_HAFIZA_MAX = 8       # hafızada en fazla kaç mesaj tutulur
+
 SISTEM = (
     "Senin adın THEDLAX. Seni thedlax yarattı, sahibin odur. "
     "Her zaman Türkçe konuş. Samimi, günlük dille ve çok KISA cevap ver, "
@@ -34,14 +52,60 @@ SISTEM = (
     "kullanıcı özellikle detay istemedikçe madde madde yazma."
 )
 
+OTOMATIK_UYARI_SINIRI = 3    # Bu kadar uyarıda otomatik susturur (0 = kapalı)
+OTOMATIK_TIMEOUT_DK = 60     # Otomatik susturma süresi (dakika)
+
 NO_PING = discord.AllowedMentions.none()
 BASLANGIC = time.time()
+VERI_DOSYASI = "veri.json"
 
-# Bellekte tutulanlar (bot yeniden başlayınca sıfırlanır)
-afk_users = {}        # {kullanici_id: (sebep, zaman)}
-uyarilar = {}         # {sunucu_id: {kullanici_id: [(sebep, yetkili_id, zaman)]}}
+# Bellekte tutulanlar
+afk_users = {}        # {kullanici_id: {"sebep", "zaman", "etiketler": [[yazar_id, link]]}}  (kaydedilir)
+uyarilar = {}         # {sunucu_id: {kullanici_id: [(sebep, yetkili_id, zaman)]}}             (kaydedilir)
+hatirlatmalar = []    # [{"kanal", "kullanici", "zaman", "mesaj"}]                            (kaydedilir)
 silinenler = {}       # {kanal_id: (yazar, icerik, zaman)}
+ai_gecmis = {}        # {(kanal_id, kullanici_id): {"mesajlar": [(rol, metin)], "son": zaman}}
+ai_son_soru = {}      # {kullanici_id: zaman}
 arkaplan_gorevleri = set()
+
+
+# ----------------------------------------------------------------------
+# Veri kaydetme (bot yeniden başlayınca silinmesin)
+# ----------------------------------------------------------------------
+def veri_yukle():
+    try:
+        with open(VERI_DOSYASI, "r", encoding="utf-8") as f:
+            v = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"Veri dosyası okunamadı: {e!r}")
+        return
+    for uid, d in v.get("afk", {}).items():
+        afk_users[int(uid)] = d
+    for gid, kisiler in v.get("uyarilar", {}).items():
+        uyarilar[int(gid)] = {
+            int(uid): [tuple(x) for x in liste] for uid, liste in kisiler.items()
+        }
+    hatirlatmalar.extend(v.get("hatirlatmalar", []))
+
+
+def veri_kaydet():
+    v = {
+        "afk": {str(k): d for k, d in afk_users.items()},
+        "uyarilar": {
+            str(g): {str(u): [list(x) for x in liste] for u, liste in kisiler.items()}
+            for g, kisiler in uyarilar.items()
+        },
+        "hatirlatmalar": hatirlatmalar,
+    }
+    gecici = VERI_DOSYASI + ".tmp"
+    try:
+        with open(gecici, "w", encoding="utf-8") as f:
+            json.dump(v, f, ensure_ascii=False)
+        os.replace(gecici, VERI_DOSYASI)
+    except Exception as e:
+        print(f"Veri kaydedilemedi: {e!r}")
 
 
 # ----------------------------------------------------------------------
@@ -77,6 +141,40 @@ def sure_yaz(saniye):
     if saniye or not parcalar:
         parcalar.append(f"{saniye} saniye")
     return " ".join(parcalar)
+
+
+_BIRIMLER = {
+    "s": 1, "sn": 1, "sec": 1, "saniye": 1,
+    "m": 60, "dk": 60, "min": 60, "dakika": 60,
+    "h": 3600, "sa": 3600, "saat": 3600,
+    "d": 86400, "g": 86400, "gun": 86400, "gün": 86400,
+}
+
+
+def sure_coz(metin, varsayilan="dk"):
+    """'30', '30s', '5m', '2h', '1d', '1h30m' -> saniye. Anlaşılmazsa None."""
+    metin = metin.strip().lower().replace(" ", "")
+    if not metin:
+        return None
+    if metin.isdigit():
+        metin += varsayilan
+    parcalar = re.findall(r"(\d+)([a-zçğıöşü]+)", metin)
+    if not parcalar or "".join(f"{s}{b}" for s, b in parcalar) != metin:
+        return None
+    toplam = 0
+    for sayi, birim in parcalar:
+        if birim not in _BIRIMLER:
+            return None
+        toplam += int(sayi) * _BIRIMLER[birim]
+    return toplam
+
+
+async def dm_gonder(uye, metin):
+    """Kişiye özelden mesaj atar, kapalıysa sessizce geçer."""
+    try:
+        await uye.send(metin)
+    except Exception:
+        pass
 
 
 _ISLEMLER = {
@@ -115,9 +213,133 @@ def guvenli_hesapla(ifade):
 
 
 # ----------------------------------------------------------------------
+# Hatırlatmalar (kaydedilir, bot yeniden başlasa da çalışır)
+# ----------------------------------------------------------------------
+async def hatirlatma_gorevi(kayit):
+    await bot.wait_until_ready()
+    bekle = kayit["zaman"] - time.time()
+    gec_kaldi = bekle < -60
+    if bekle > 0:
+        await asyncio.sleep(bekle)
+
+    metin = f"⏰ <@{kayit['kullanici']}> hatırlatma: {kayit['mesaj']}"
+    if gec_kaldi:
+        metin += "\n*(Bot kapalıyken zamanı geçmişti, geç kaldım.)*"
+    izin = discord.AllowedMentions(users=[discord.Object(id=kayit["kullanici"])])
+
+    gonderildi = False
+    kanal = bot.get_channel(kayit["kanal"])
+    if kanal is None:
+        try:
+            kanal = await bot.fetch_channel(kayit["kanal"])
+        except Exception:
+            kanal = None
+    if kanal is not None:
+        try:
+            await kanal.send(metin, allowed_mentions=izin)
+            gonderildi = True
+        except Exception:
+            pass
+    if not gonderildi:
+        try:
+            kisi = await bot.fetch_user(kayit["kullanici"])
+            await kisi.send(metin)
+        except Exception:
+            pass
+
+    if kayit in hatirlatmalar:
+        hatirlatmalar.remove(kayit)
+        veri_kaydet()
+
+
+def hatirlatma_baslat(kayit):
+    gorev = asyncio.create_task(hatirlatma_gorevi(kayit))
+    arkaplan_gorevleri.add(gorev)
+    gorev.add_done_callback(arkaplan_gorevleri.discard)
+
+
+# ----------------------------------------------------------------------
+# Yapay zeka (Gemini)
+# ----------------------------------------------------------------------
+def gemini_istek(contents, sistem):
+    """İnternete bağlanır (ayrı thread'de çalışır). (cevap, hata) döner."""
+    son_hata = "bilinmiyor"
+    for model in AI_MODELLER:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            payload = {
+                "systemInstruction": {"parts": [{"text": sistem}]},
+                "contents": contents,
+                "generationConfig": {"maxOutputTokens": 400},
+            }
+            veri = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=veri,
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "x-goog-api-key": GEMINI_KEY,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=40) as r:
+                sonuc = json.loads(r.read().decode("utf-8"))
+            adaylar = sonuc.get("candidates") or []
+            parcalar = (adaylar[0].get("content", {}).get("parts") or []) if adaylar else []
+            metin = "".join(p.get("text", "") for p in parcalar).strip()
+            if metin:
+                return metin, ""
+            son_hata = "bos"
+        except urllib.error.HTTPError as e:
+            govde = e.read().decode("utf-8", errors="ignore")
+            print(f"Gemini hatası ({model}) HTTP {e.code}: {govde[:500]}")
+            son_hata = f"HTTP {e.code}"
+        except Exception as e:
+            print(f"Gemini hatası ({model}): {e!r}")
+            son_hata = type(e).__name__
+    return None, son_hata
+
+
+async def ai_cevapla(kullanici, kanal_id, soru):
+    """Her zaman gönderilecek bir metin döner (cevap ya da hata mesajı)."""
+    simdi = time.time()
+    kalan = AI_BEKLEME - (simdi - ai_son_soru.get(kullanici.id, 0))
+    if kalan > 0:
+        return f"⏳ Biraz yavaş, {int(kalan) + 1} saniye sonra tekrar sor."
+    ai_son_soru[kullanici.id] = simdi
+
+    anahtar = (kanal_id, kullanici.id)
+    kayit = ai_gecmis.get(anahtar)
+    if kayit and simdi - kayit["son"] > AI_HAFIZA_SURE:
+        kayit = None
+    mesajlar = list(kayit["mesajlar"]) if kayit else []
+    mesajlar.append(("user", soru))
+
+    contents = [{"role": r, "parts": [{"text": t}]} for r, t in mesajlar]
+    sistem = SISTEM + f" Şu an konuştuğun kişinin adı: {kullanici.display_name}."
+    cevap, hata = await asyncio.to_thread(gemini_istek, contents, sistem)
+
+    if cevap:
+        mesajlar.append(("model", cevap))
+        mesajlar = mesajlar[-AI_HAFIZA_MAX:]
+        while mesajlar and mesajlar[0][0] != "user":
+            mesajlar.pop(0)
+        ai_gecmis[anahtar] = {"mesajlar": mesajlar, "son": simdi}
+        return cevap
+    if hata == "HTTP 429":
+        return "⏳ Şu an çok fazla istek var, biraz sonra tekrar dene."
+    if hata == "bos":
+        return "🤐 Buna cevap veremedim, başka türlü sor."
+    return f"😵 Şu an cevap veremiyorum. ({hata})"
+
+
+# ----------------------------------------------------------------------
 # Genel olaylar
 # ----------------------------------------------------------------------
 async def setup_hook():
+    veri_yukle()
+    for kayit in list(hatirlatmalar):
+        hatirlatma_baslat(kayit)
     try:
         senkron = await bot.tree.sync()
         print(f"{len(senkron)} slash komutu kaydedildi.")
@@ -135,7 +357,7 @@ async def on_ready():
 
 @bot.check
 async def sadece_sunucu(ctx):
-    if ctx.guild is None and ctx.command.name not in ("ai", "help", "ping"):
+    if ctx.guild is None and ctx.command.name not in ("ai", "aisifirla", "help", "ping", "surum"):
         raise commands.NoPrivateMessage()
     return True
 
@@ -188,56 +410,26 @@ async def on_message_delete(message):
 
 
 # ----------------------------------------------------------------------
-# AI
+# AI komutları
 # ----------------------------------------------------------------------
 @bot.hybrid_command(name="ai", usage="<soru>")
 @app_commands.describe(soru="Yapay zekaya sorun")
 async def ai(ctx, *, soru: str = None):
-    """Gemini AI ile sohbet etme komutu"""
+    """Yapay zekayla sohbet et (konuşmayı hatırlar)"""
     if not soru:
         await ctx.send("Efendim? Sorunu yazmak için: `td/ai <sorun>`")
         return
-
     async with ctx.typing():
-        modeller = ["gemini-3.1-flash-lite"]
+        cevap = await ai_cevapla(ctx.author, ctx.channel.id, soru)
+    for i in range(0, len(cevap), 1900):
+        await ctx.send(cevap[i:i + 1900], allowed_mentions=NO_PING)
 
-        cevap = None
-        detayli_hata = ""
 
-        for model in modeller:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-                headers = {"Content-Type": "application/json; charset=utf-8"}
-                payload = {
-                    "systemInstruction": {"parts": [{"text": SISTEM}]},
-                    "contents": [{"parts": [{"text": soru}]}],
-                    "generationConfig": {"maxOutputTokens": 400},
-                }
-
-                data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
-
-                with urllib.request.urlopen(req) as response:
-                    result_json = json.loads(response.read().decode("utf-8"))
-                    cevap = result_json["candidates"][0]["content"]["parts"][0]["text"]
-                    if cevap:
-                        break
-            except urllib.error.HTTPError as e:
-                hata_icerigi = e.read().decode("utf-8", errors="ignore")
-                detayli_hata = f"HTTP {e.code}: {hata_icerigi}"
-                continue
-            except Exception as e:
-                detayli_hata = str(e)
-                continue
-
-        if cevap:
-            if len(cevap) > 1900:
-                for i in range(0, len(cevap), 1900):
-                    await ctx.send(cevap[i:i + 1900], allowed_mentions=NO_PING)
-            else:
-                await ctx.send(cevap, allowed_mentions=NO_PING)
-        else:
-            await ctx.send(f"**API Detaylı Hata:**\n```{detayli_hata[:1800]}```")
+@bot.hybrid_command(name="aisifirla", aliases=["aireset", "unut"])
+async def aisifirla(ctx):
+    """Yapay zekanın seninle olan sohbet hafızasını temizle"""
+    ai_gecmis.pop((ctx.channel.id, ctx.author.id), None)
+    await ctx.send("🧠 Bu kanaldaki sohbet hafızan temizlendi.")
 
 
 # ----------------------------------------------------------------------
@@ -248,7 +440,8 @@ async def ai(ctx, *, soru: str = None):
 async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
     """AFK moduna geç"""
     sebep = sebep[:200]
-    afk_users[ctx.author.id] = (sebep, int(time.time()))
+    afk_users[ctx.author.id] = {"sebep": sebep, "zaman": int(time.time()), "etiketler": []}
+    veri_kaydet()
     await ctx.send(
         f"💤 {ctx.author.mention} artık AFK: **{sebep}**",
         allowed_mentions=NO_PING,
@@ -258,20 +451,25 @@ async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
 # ----------------------------------------------------------------------
 # Kanal yönetimi: yavaş mod, kilit, gizle
 # ----------------------------------------------------------------------
-@bot.hybrid_command(name="yavasmod", aliases=["yavaşmod", "slowmode"], usage="<saniye>")
-@app_commands.describe(saniye="Yavaş mod süresi, saniye (0 = kapat)")
+@bot.hybrid_command(name="yavasmod", aliases=["yavaşmod", "slowmode"], usage="<süre> [#kanal]")
+@app_commands.describe(
+    sure="Süre: 10, 30s, 5m, 1h (0 = kapat)",
+    kanal="Hangi kanal (boş bırakırsan bu kanal)",
+)
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
-async def yavasmod(ctx, saniye: int):
+async def yavasmod(ctx, sure: str, kanal: discord.TextChannel = None):
     """Kanalın yavaş modunu ayarla (0 = kapat)"""
-    if saniye < 0 or saniye > 21600:
-        await ctx.send("❌ 0 ile 21600 saniye arasında bir sayı gir.")
+    saniye = sure_coz(sure, "s")
+    if saniye is None or saniye > 21600:
+        await ctx.send("❌ Süreyi `10`, `30s`, `5m` ya da `1h` gibi yaz (en fazla 6 saat).")
         return
-    await ctx.channel.edit(slowmode_delay=saniye)
+    hedef = kanal or ctx.channel
+    await hedef.edit(slowmode_delay=saniye)
     if saniye == 0:
-        await ctx.send("✅ Yavaş mod kapatıldı.")
+        await ctx.send(f"✅ {hedef.mention} yavaş modu kapatıldı.")
     else:
-        await ctx.send(f"🐢 Yavaş mod **{saniye} saniye** olarak ayarlandı.")
+        await ctx.send(f"🐢 {hedef.mention} yavaş modu **{sure_yaz(saniye)}** olarak ayarlandı.")
 
 
 @yavasmod.error
@@ -281,31 +479,35 @@ async def yavasmod_error(ctx, error):
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Benim **Kanalları Yönet** yetkim yok.")
     elif isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
-        await ctx.send("Kullanım: `td!yavasmod <saniye>` (kapatmak için `0`)")
+        await ctx.send("Kullanım: `td!yavasmod <süre> [#kanal]` (kapatmak için `0`)")
 
 
-@bot.hybrid_command(name="lock", aliases=["kilitle"])
+@bot.hybrid_command(name="lock", aliases=["kilitle"], usage="[#kanal]")
+@app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
-async def lock(ctx):
+async def lock(ctx, kanal: discord.TextChannel = None):
     """Kanalı kilitle (herkesin mesaj yazmasını kapat)"""
+    hedef = kanal or ctx.channel
     # Bot kilitlenen kanalda yazmaya devam edebilsin
-    await ctx.channel.set_permissions(ctx.guild.me, send_messages=True)
-    ow = ctx.channel.overwrites_for(ctx.guild.default_role)
+    await hedef.set_permissions(ctx.guild.me, send_messages=True)
+    ow = hedef.overwrites_for(ctx.guild.default_role)
     ow.send_messages = False
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
-    await ctx.send("🔒 Bu kanal kilitlendi. Kimse mesaj yazamaz.")
+    await hedef.set_permissions(ctx.guild.default_role, overwrite=ow)
+    await ctx.send(f"🔒 {hedef.mention} kilitlendi. Kimse mesaj yazamaz.")
 
 
-@bot.hybrid_command(name="unlock", aliases=["kilitac", "kilitaç"])
+@bot.hybrid_command(name="unlock", aliases=["kilitac", "kilitaç"], usage="[#kanal]")
+@app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
-async def unlock(ctx):
+async def unlock(ctx, kanal: discord.TextChannel = None):
     """Kanal kilidini aç"""
-    ow = ctx.channel.overwrites_for(ctx.guild.default_role)
+    hedef = kanal or ctx.channel
+    ow = hedef.overwrites_for(ctx.guild.default_role)
     ow.send_messages = None
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
-    await ctx.send("🔓 Kanal kilidi açıldı.")
+    await hedef.set_permissions(ctx.guild.default_role, overwrite=ow)
+    await ctx.send(f"🔓 {hedef.mention} kilidi açıldı.")
 
 
 @lock.error
@@ -315,29 +517,35 @@ async def kilit_error(ctx, error):
         await ctx.send("❌ Bunun için **Kanalları Yönet** yetkin olmalı.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Benim **Kanalları Yönet** yetkim yok.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Kanalı bulamadım. `#kanal` şeklinde etiketle.")
 
 
-@bot.hybrid_command(name="gizle", aliases=["hide"])
+@bot.hybrid_command(name="gizle", aliases=["hide"], usage="[#kanal]")
+@app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
-async def gizle(ctx):
+async def gizle(ctx, kanal: discord.TextChannel = None):
     """Kanalı herkesten gizle"""
-    await ctx.channel.set_permissions(ctx.guild.me, view_channel=True, send_messages=True)
-    ow = ctx.channel.overwrites_for(ctx.guild.default_role)
+    hedef = kanal or ctx.channel
+    await hedef.set_permissions(ctx.guild.me, view_channel=True, send_messages=True)
+    ow = hedef.overwrites_for(ctx.guild.default_role)
     ow.view_channel = False
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
-    await ctx.send("🙈 Kanal herkesten gizlendi.")
+    await hedef.set_permissions(ctx.guild.default_role, overwrite=ow)
+    await ctx.send(f"🙈 {hedef.mention} herkesten gizlendi.")
 
 
-@bot.hybrid_command(name="goster", aliases=["göster", "show"])
+@bot.hybrid_command(name="goster", aliases=["göster", "show"], usage="[#kanal]")
+@app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
-async def goster(ctx):
+async def goster(ctx, kanal: discord.TextChannel = None):
     """Gizli kanalı tekrar göster"""
-    ow = ctx.channel.overwrites_for(ctx.guild.default_role)
+    hedef = kanal or ctx.channel
+    ow = hedef.overwrites_for(ctx.guild.default_role)
     ow.view_channel = None
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
-    await ctx.send("👀 Kanal tekrar görünür.")
+    await hedef.set_permissions(ctx.guild.default_role, overwrite=ow)
+    await ctx.send(f"👀 {hedef.mention} tekrar görünür.")
 
 
 # ----------------------------------------------------------------------
@@ -352,6 +560,7 @@ async def kick(ctx, uye: discord.Member, *, sebep: str = "Sebep belirtilmedi"):
     ok, mesaj = hiyerarsi_kontrol(ctx, uye)
     if not ok:
         return await ctx.send(mesaj)
+    await dm_gonder(uye, f"👢 **{ctx.guild.name}** sunucusundan atıldın.\nSebep: {sebep}")
     await uye.kick(reason=f"{ctx.author}: {sebep}")
     await ctx.send(f"👢 **{uye}** sunucudan atıldı. Sebep: {sebep}", allowed_mentions=NO_PING)
 
@@ -367,6 +576,7 @@ async def ban(ctx, kisi: discord.User, *, sebep: str = "Sebep belirtilmedi"):
         ok, mesaj = hiyerarsi_kontrol(ctx, uye)
         if not ok:
             return await ctx.send(mesaj)
+        await dm_gonder(uye, f"🔨 **{ctx.guild.name}** sunucusundan yasaklandın.\nSebep: {sebep}")
     elif kisi.id == ctx.author.id:
         return await ctx.send("❌ Bunu kendine yapamazsın.")
     await ctx.guild.ban(kisi, reason=f"{ctx.author}: {sebep}")
@@ -386,20 +596,29 @@ async def unban(ctx, kisi: discord.User):
     await ctx.send(f"✅ **{kisi}** kişisinin yasağı kaldırıldı.", allowed_mentions=NO_PING)
 
 
-@bot.hybrid_command(name="timeout", aliases=["sustur", "mute"], usage="@kişi <dakika> [sebep]")
-@app_commands.describe(uye="Susturulacak kişi", dakika="Kaç dakika (en fazla 40320)", sebep="Sebep")
+@bot.hybrid_command(name="timeout", aliases=["sustur", "mute"], usage="@kişi <süre> [sebep]")
+@app_commands.describe(
+    uye="Susturulacak kişi",
+    sure="Süre: 30m, 2h, 1d (en fazla 28 gün)",
+    sebep="Sebep",
+)
 @commands.has_permissions(moderate_members=True)
 @commands.bot_has_permissions(moderate_members=True)
-async def timeout(ctx, uye: discord.Member, dakika: int, *, sebep: str = "Sebep belirtilmedi"):
-    """Üyeyi belirli dakika susturur (en fazla 40320 dk = 28 gün)"""
-    if dakika < 1 or dakika > 40320:
-        return await ctx.send("❌ Süre 1 ile 40320 dakika arasında olmalı.")
+async def timeout(ctx, uye: discord.Member, sure: str, *, sebep: str = "Sebep belirtilmedi"):
+    """Üyeyi belirli süre susturur (en fazla 28 gün)"""
+    saniye = sure_coz(sure, "dk")
+    if saniye is None or saniye < 1 or saniye > 28 * 86400:
+        return await ctx.send("❌ Süreyi `30m`, `2h` ya da `1d` gibi yaz (en fazla 28 gün).")
     ok, mesaj = hiyerarsi_kontrol(ctx, uye)
     if not ok:
         return await ctx.send(mesaj)
-    await uye.timeout(datetime.timedelta(minutes=dakika), reason=f"{ctx.author}: {sebep}")
+    await uye.timeout(datetime.timedelta(seconds=saniye), reason=f"{ctx.author}: {sebep}")
+    await dm_gonder(
+        uye,
+        f"🔇 **{ctx.guild.name}** sunucusunda **{sure_yaz(saniye)}** susturuldun.\nSebep: {sebep}",
+    )
     await ctx.send(
-        f"🔇 **{uye}** {dakika} dakika susturuldu. Sebep: {sebep}",
+        f"🔇 **{uye}** {sure_yaz(saniye)} susturuldu. Sebep: {sebep}",
         allowed_mentions=NO_PING,
     )
 
@@ -414,19 +633,42 @@ async def untimeout(ctx, uye: discord.Member):
     await ctx.send(f"🔊 **{uye}** susturması kaldırıldı.", allowed_mentions=NO_PING)
 
 
-@bot.hybrid_command(name="temizle", aliases=["sil", "purge", "clear"], usage="<1-100>")
-@app_commands.describe(adet="Silinecek mesaj sayısı (1-100)")
+@bot.hybrid_command(name="temizle", aliases=["sil", "purge", "clear"], usage="<1-100> [@kişi]")
+@app_commands.describe(
+    adet="Silinecek mesaj sayısı (1-100)",
+    kisi="Sadece bu kişinin mesajlarını sil (isteğe bağlı)",
+)
 @commands.has_permissions(manage_messages=True)
 @commands.bot_has_permissions(manage_messages=True, read_message_history=True)
-async def temizle(ctx, adet: int):
-    """Kanaldan toplu mesaj sil"""
+async def temizle(ctx, adet: int, kisi: discord.Member = None):
+    """Kanaldan toplu mesaj sil (istersen sadece bir kişinin)"""
     if adet < 1 or adet > 100:
         return await ctx.send("❌ 1 ile 100 arasında bir sayı gir.")
     slash = ctx.interaction is not None
     if slash:
         await ctx.defer(ephemeral=True)
-    silinen = await ctx.channel.purge(limit=adet if slash else adet + 1)
-    sayi = len(silinen) if slash else max(len(silinen) - 1, 0)
+
+    if kisi is None:
+        silinen = await ctx.channel.purge(limit=adet if slash else adet + 1)
+        sayi = len(silinen) if slash else max(len(silinen) - 1, 0)
+    else:
+        sayac = 0
+
+        def kontrol(m):
+            nonlocal sayac
+            if m.author.id != kisi.id or sayac >= adet:
+                return False
+            sayac += 1
+            return True
+
+        silinen = await ctx.channel.purge(limit=300, check=kontrol)
+        sayi = len(silinen)
+        if not slash:
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+
     if slash:
         await ctx.send(f"🧹 {sayi} mesaj silindi.", ephemeral=True)
     else:
@@ -437,13 +679,28 @@ async def temizle(ctx, adet: int):
 @app_commands.describe(uye="Uyarılacak kişi", sebep="Sebep")
 @commands.has_permissions(manage_messages=True)
 async def warn(ctx, uye: discord.Member, *, sebep: str = "Sebep belirtilmedi"):
-    """Üyeyi uyar (uyarı listesine ekler)"""
+    """Üyeyi uyar (DM atar, çok uyarıda otomatik susturur)"""
     if uye.bot:
         return await ctx.send("❌ Botları uyaramazsın.")
     liste = uyarilar.setdefault(ctx.guild.id, {}).setdefault(uye.id, [])
     liste.append((sebep[:200], ctx.author.id, int(time.time())))
+    veri_kaydet()
+    await dm_gonder(uye, f"⚠️ **{ctx.guild.name}** sunucusunda uyarıldın ({len(liste)}. uyarı).\nSebep: {sebep}")
+
+    ek = ""
+    if OTOMATIK_UYARI_SINIRI and len(liste) % OTOMATIK_UYARI_SINIRI == 0:
+        ok, _ = hiyerarsi_kontrol(ctx, uye)
+        if ok and ctx.guild.me.guild_permissions.moderate_members:
+            try:
+                await uye.timeout(
+                    datetime.timedelta(minutes=OTOMATIK_TIMEOUT_DK),
+                    reason=f"Otomatik: {len(liste)} uyarı",
+                )
+                ek = f"\n🔇 {len(liste)} uyarıya ulaştığı için **{OTOMATIK_TIMEOUT_DK} dakika** susturuldu."
+            except discord.HTTPException:
+                pass
     await ctx.send(
-        f"⚠️ **{uye}** uyarıldı ({len(liste)}. uyarı). Sebep: {sebep}",
+        f"⚠️ **{uye}** uyarıldı ({len(liste)}. uyarı). Sebep: {sebep}{ek}",
         allowed_mentions=NO_PING,
     )
 
@@ -475,6 +732,7 @@ async def warnings(ctx, uye: discord.Member = None):
 async def clearwarns(ctx, uye: discord.Member):
     """Üyenin tüm uyarılarını sil"""
     uyarilar.get(ctx.guild.id, {}).pop(uye.id, None)
+    veri_kaydet()
     await ctx.send(f"🧽 **{uye}** kişisinin uyarıları silindi.", allowed_mentions=NO_PING)
 
 
@@ -535,6 +793,18 @@ async def ping(ctx):
 async def uptime(ctx):
     """Bot ne kadardır açık"""
     await ctx.send(f"⏱️ Bot **{sure_yaz(time.time() - BASLANGIC)}** önce başladı.")
+
+
+@bot.hybrid_command(name="surum", aliases=["version", "yenilikler"])
+async def surum(ctx):
+    """Botun sürümü ve son yenilikler"""
+    embed = discord.Embed(
+        title=f"🤖 THEDLAX v{SURUM}",
+        description=DEGISIKLIKLER,
+        color=discord.Color.green(),
+    )
+    embed.set_footer(text="Tüm komutlar için: /help")
+    await ctx.send(embed=embed)
 
 
 @bot.hybrid_command(name="avatar", aliases=["pp"], usage="[@kişi]")
@@ -745,27 +1015,26 @@ async def hesapla(ctx, *, ifade: str):
     await ctx.send(f"🧮 `{ifade}` = **{str(sonuc)[:200]}**")
 
 
-@bot.hybrid_command(name="hatirlat", aliases=["hatırlat", "remind"], usage="<dakika> <mesaj>")
-@app_commands.describe(dakika="Kaç dakika sonra (1-1440)", mesaj="Hatırlatılacak şey")
-async def hatirlat(ctx, dakika: int, *, mesaj: str):
-    """Belirli dakika sonra seni etiketleyip hatırlatır (en fazla 1440 dk)"""
-    if dakika < 1 or dakika > 1440:
-        return await ctx.send("❌ Süre 1 ile 1440 dakika arasında olmalı.")
-    await ctx.send(f"⏰ Tamam, **{dakika} dakika** sonra hatırlatacağım.")
-
-    async def _bekle():
-        await asyncio.sleep(dakika * 60)
-        try:
-            await ctx.channel.send(
-                f"⏰ {ctx.author.mention} hatırlatma: {mesaj[:1500]}",
-                allowed_mentions=discord.AllowedMentions(users=[ctx.author]),
-            )
-        except Exception:
-            pass
-
-    gorev = asyncio.create_task(_bekle())
-    arkaplan_gorevleri.add(gorev)
-    gorev.add_done_callback(arkaplan_gorevleri.discard)
+@bot.hybrid_command(name="hatirlat", aliases=["hatırlat", "remind"], usage="<süre> <mesaj>")
+@app_commands.describe(
+    sure="Ne kadar sonra: 10m, 2h, 1d, 1h30m (en fazla 7 gün)",
+    mesaj="Hatırlatılacak şey",
+)
+async def hatirlat(ctx, sure: str, *, mesaj: str):
+    """Belirli süre sonra seni etiketleyip hatırlatır (bot kapansa da unutmaz)"""
+    saniye = sure_coz(sure, "dk")
+    if saniye is None or saniye < 5 or saniye > 7 * 86400:
+        return await ctx.send("❌ Süreyi `10m`, `2h` ya da `1d` gibi yaz (5 saniye - 7 gün).")
+    kayit = {
+        "kanal": ctx.channel.id,
+        "kullanici": ctx.author.id,
+        "zaman": time.time() + saniye,
+        "mesaj": mesaj[:1500],
+    }
+    hatirlatmalar.append(kayit)
+    veri_kaydet()
+    hatirlatma_baslat(kayit)
+    await ctx.send(f"⏰ Tamam, **{sure_yaz(saniye)}** sonra hatırlatacağım.")
 
 
 @bot.hybrid_command(name="fake", aliases=["fakemesaj"], usage="@kişi <mesaj>")
@@ -836,10 +1105,10 @@ async def fake_error(ctx, error):
 async def help_komutu(ctx):
     """Tüm komutları göster"""
     embed = discord.Embed(
-        title="📖 THEDLAX Komutları",
+        title=f"📖 THEDLAX v{SURUM} Komutları",
         description=(
             "`/` yaz, komutlar kendiliğinden çıkar. Ya da prefix: `td!` / `td/`\n"
-            "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Etiket için `@` yazıp listeden seç."
+            "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Süre örnekleri: `30s` `5m` `2h` `1d`"
         ),
         color=discord.Color.blurple(),
     )
@@ -849,10 +1118,10 @@ async def help_komutu(ctx):
             "`kick @kişi [sebep]` Sunucudan at\n"
             "`ban @kişi/ID [sebep]` Yasakla\n"
             "`unban <ID>` Yasağı kaldır\n"
-            "`timeout @kişi <dk> [sebep]` Sustur\n"
+            "`timeout @kişi <süre> [sebep]` Sustur\n"
             "`untimeout @kişi` Susturmayı kaldır\n"
-            "`temizle <1-100>` Mesaj sil\n"
-            "`warn @kişi [sebep]` Uyar\n"
+            "`temizle <1-100> [@kişi]` Mesaj sil\n"
+            "`warn @kişi [sebep]` Uyar (3 uyarıda otomatik susturur)\n"
             "`warnings [@kişi]` Uyarıları göster\n"
             "`clearwarns @kişi` Uyarıları sil\n"
             "`nick @kişi [isim]` Takma ad\n"
@@ -864,9 +1133,9 @@ async def help_komutu(ctx):
     embed.add_field(
         name="🔧 Kanal",
         value=(
-            "`yavasmod <saniye>` Yavaş mod (0 = kapat)\n"
-            "`lock` / `unlock` Kanalı kilitle / aç\n"
-            "`gizle` / `goster` Kanalı gizle / göster"
+            "`yavasmod <süre> [#kanal]` Yavaş mod (0 = kapat)\n"
+            "`lock [#kanal]` / `unlock [#kanal]` Kilitle / aç\n"
+            "`gizle [#kanal]` / `goster [#kanal]` Gizle / göster"
         ),
         inline=False,
     )
@@ -875,6 +1144,7 @@ async def help_komutu(ctx):
         value=(
             "`ping` Gecikme\n"
             "`uptime` Bot ne kadardır açık\n"
+            "`surum` Sürüm ve yenilikler\n"
             "`avatar [@kişi]` Profil fotoğrafı\n"
             "`userinfo [@kişi]` Kullanıcı bilgisi\n"
             "`serverinfo` Sunucu bilgisi\n"
@@ -886,7 +1156,8 @@ async def help_komutu(ctx):
     embed.add_field(
         name="🎮 Araçlar ve Eğlence",
         value=(
-            "`ai <soru>` Yapay zekayla sohbet (botu etiketleyebilir ya da mesajına yanıt verebilirsin)\n"
+            "`ai <soru>` Yapay zekayla sohbet (konuşmayı hatırlar, botu etiketleyebilir ya da mesajına yanıt verebilirsin)\n"
+            "`aisifirla` AI hafızanı temizle\n"
             "`afk [sebep]` AFK ol (mesaj yazınca çıkarsın)\n"
             "`say <mesaj>` Bot söylesin\n"
             "`embed Başlık | Açıklama` Embed mesaj\n"
@@ -896,7 +1167,7 @@ async def help_komutu(ctx):
             "`sec a | b | c` Rastgele seç\n"
             "`sor <soru>` Sihirli 8 top\n"
             "`hesapla <işlem>` Hesap makinesi\n"
-            "`hatirlat <dk> <mesaj>` Hatırlatıcı\n"
+            "`hatirlat <süre> <mesaj>` Hatırlatıcı\n"
             "`fake @kişi <mesaj>` Kişinin adıyla mesaj"
         ),
         inline=False,
@@ -928,12 +1199,14 @@ async def on_message(message):
 
     # 1) Yazan kişi AFK ise modu kapat
     if message.author.id in afk_users and not afk_komutu:
-        del afk_users[message.author.id]
-        await message.channel.send(
-            f"👋 Hoş geldin {message.author.mention}, AFK modundan çıktın.",
-            allowed_mentions=NO_PING,
-            delete_after=10,
-        )
+        kayit = afk_users.pop(message.author.id)
+        veri_kaydet()
+        metin = f"👋 Hoş geldin {message.author.mention}, **{sure_yaz(time.time() - kayit['zaman'])}** AFK'ydın."
+        etiketler = kayit.get("etiketler", [])
+        if etiketler:
+            linkler = ", ".join(f"<@{yid}> [git]({url})" for yid, url in etiketler[:5])
+            metin += f"\n📬 Sen yokken **{len(etiketler)}** kez etiketlendin: {linkler}"
+        await message.channel.send(metin[:1900], allowed_mentions=NO_PING, delete_after=30)
 
     # 2) Etiketlenen ya da yanıtlanan kişi AFK mı?
     hedefler = {u.id: u for u in message.mentions}
@@ -941,9 +1214,12 @@ async def on_message(message):
         hedefler[ref.author.id] = ref.author
     for uid, user in hedefler.items():
         if uid in afk_users and uid != message.author.id:
-            sebep, zaman = afk_users[uid]
+            kayit = afk_users[uid]
+            if len(kayit.setdefault("etiketler", [])) < 10:
+                kayit["etiketler"].append([message.author.id, message.jump_url])
+                veri_kaydet()
             await message.reply(
-                f"💤 **{user.display_name}** şu an AFK: {sebep} (<t:{zaman}:R>)",
+                f"💤 **{user.display_name}** şu an AFK: {kayit['sebep']} (<t:{kayit['zaman']}:R>)",
                 mention_author=False,
                 allowed_mentions=NO_PING,
             )
