@@ -13,20 +13,20 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-SURUM = "1.3"
+SURUM = "1.4"
 DEGISIKLIKLER = (
-    "🧠 AI artık konuşmayı hatırlıyor, botu dondurmuyor, spam'e karşı 5 sn bekleme var\n"
-    "📬 AFK: ne kadar AFK kaldığını ve seni kimlerin etiketlediğini gösterir\n"
-    "💾 AFK, uyarılar ve hatırlatmalar bot yeniden başlayınca silinmez\n"
-    "⏱️ Süre yazımı kolaylaştı: `30s`, `5m`, `2h`, `1d`, `1h30m`\n"
-    "🔧 lock, unlock, gizle, goster ve yavasmod başka kanal için de çalışır\n"
-    "🧹 temizle: sadece seçtiğin kişinin mesajlarını silebilir\n"
-    "⚠️ warn: kişiye DM atar, 3 uyarıda otomatik susturur\n"
-    "📩 kick, ban ve timeout kişiye sebebiyle DM gönderir"
+    "🧱 `sunucukur`: butonlarla kanal, kategori, rol ve hazır şablon kurma paneli\n"
+    "🛡️ `guvenlik`: küfür, spam, davet ve link korumasını butonlarla aç/kapat\n"
+    "🤬 Çok küfür eden otomatik 10 dakika susturulur\n"
+    "📋 Log sistemi: `logkanal #kanal` (silinen/düzenlenen mesaj, giriş-çıkış, ban, susturma, ses ve daha fazlası)\n"
+    "🎮 Yeni oyunlar: `tkm`, `xox`, `sayitahmin`, `slot`\n"
+    "🧠 AI: `ozet` (sohbet özeti) ve `cevir` (çeviri) eklendi, cevaplar daha hızlı\n"
+    "🔐 API anahtarı artık dosyada değil, ortam değişkeninde"
 )
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True   # giriş/çıkış logları için (Developer Portal'da Server Members Intent açık olmalı)
 PREFIXLER = ("td/", "td!")
 bot = commands.Bot(
     command_prefix=list(PREFIXLER),
@@ -40,8 +40,9 @@ p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
 p2 = "LXS5N62GbgEWFRELbzQCuj5FCsechg"
 GEMINI_KEY = p1 + p2
 
+
 AI_MODELLER = ["gemini-3.1-flash-lite", "gemini-3.6-flash"]
-AI_BEKLEME = 5          # aynı kişi en az kaç saniye arayla soru sorabilir
+AI_BEKLEME = 3          # aynı kişi en az kaç saniye arayla soru sorabilir
 AI_HAFIZA_SURE = 1800   # sohbet hafızası kaç saniye tutulur
 AI_HAFIZA_MAX = 8       # hafızada en fazla kaç mesaj tutulur
 
@@ -68,6 +69,7 @@ ai_gecmis = {}        # {(kanal_id, kullanici_id): {"mesajlar": [(rol, metin)], 
 ai_son_soru = {}      # {kullanici_id: zaman}
 arkaplan_gorevleri = set()
 EK_KOMUTLAR = []   # ek.py buraya yeni komutların yardım satırını ekler
+OTOMOD = None      # v14.py güvenlik filtresini buraya bağlar
 
 
 # ----------------------------------------------------------------------
@@ -283,7 +285,7 @@ def gemini_istek(contents, sistem):
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=40) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:
                 sonuc = json.loads(r.read().decode("utf-8"))
             adaylar = sonuc.get("candidates") or []
             parcalar = (adaylar[0].get("content", {}).get("parts") or []) if adaylar else []
@@ -341,6 +343,11 @@ async def setup_hook():
     veri_yukle()
     for kayit in list(hatirlatmalar):
         hatirlatma_baslat(kayit)
+    try:
+        import v14
+        await v14.yukle(bot, globals())
+    except Exception as e:
+        print(f"v14.py yüklenemedi: {e!r}")
     try:
         senkron = await bot.tree.sync()
         print(f"{len(senkron)} slash komutu kaydedildi.")
@@ -1177,7 +1184,7 @@ async def help_komutu(ctx):
         inline=False,
     )
     if EK_KOMUTLAR:
-        embed.add_field(name="✨ Yeni Komutlar", value="\n".join(EK_KOMUTLAR)[:1000], inline=False)
+        embed.add_field(name="✨ Yeni Komutlar", value="\n".join(EK_KOMUTLAR)[:1024], inline=False)
     embed.set_footer(text="Yetki gereken komutlarda ilgili yetkin olmalı.")
     await ctx.send(embed=embed)
 
@@ -1189,6 +1196,14 @@ async def help_komutu(ctx):
 async def on_message(message):
     if message.author.bot:
         return
+
+    # Güvenlik filtresi (küfür, spam, davet, link) - mesaj silindiyse devam etme
+    if message.guild is not None and OTOMOD is not None:
+        try:
+            if await OTOMOD(message):
+                return
+        except Exception as e:
+            print(f"Otomod hatası: {e!r}")
 
     icerik = message.content.lower()
     afk_komutu = icerik.startswith(("td!afk", "td/afk"))
