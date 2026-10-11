@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """THEDLAX v1.5 - ikinci parça (v15.py'nin devamı). v15.py bunu kendisi yükler."""
 import time
+from datetime import timedelta
 import random
 import asyncio
 import discord
@@ -561,6 +562,52 @@ async def raid_at(uye, sebep):
         return False
 
 
+class KanalSilOnay(discord.ui.View):
+    """Toplu kanal silme onayı (sadece komutu yazan kişi basabilir)."""
+
+    def __init__(self, yazar_id, saat):
+        super().__init__(timeout=30)
+        self.yazar_id = yazar_id
+        self.saat = saat
+        self.bitti = False
+
+    async def interaction_check(self, it):
+        if it.user.id != self.yazar_id:
+            await it.response.send_message("❌ Bu buton senin için değil.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Evet, sil", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def evet(self, it, btn):
+        if self.bitti:
+            return
+        self.bitti = True
+        self.stop()
+        sinir = discord.utils.utcnow() - timedelta(hours=self.saat) if self.saat else None
+        hedef = [c for c in it.guild.channels
+                 if c.id != it.channel_id and (sinir is None or c.created_at >= sinir)]
+        await it.response.edit_message(content=f"🗑️ **{len(hedef)}** kanal siliniyor, bekle...", view=None)
+        silinen = hata = 0
+        for c in hedef:
+            try:
+                await c.delete(reason=f"Toplu kanal temizliği ({it.user})")
+                silinen += 1
+            except discord.HTTPException:
+                hata += 1
+            await asyncio.sleep(0.4)
+        try:
+            await it.channel.send(f"✅ Bitti: **{silinen}** kanal silindi" + (f", **{hata}** silinemedi" if hata else "")
+                                  + ". Şu an bulunduğun kanalı elle silebilirsin.")
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="İptal", style=discord.ButtonStyle.secondary, emoji="❎")
+    async def iptal(self, it, btn):
+        self.bitti = True
+        self.stop()
+        await it.response.edit_message(content="❎ İptal edildi.", view=None)
+
+
 class V15(commands.Cog):
     def __init__(self, bot, g):
         self.bot = bot
@@ -999,6 +1046,26 @@ class V15(commands.Cog):
         kanallar = " ".join(f"<#{k}>" for k in s["muaf_kanal"]) or "Yok"
         roller = " ".join(f"<@&{r}>" for r in s["muaf_rol"]) or "Yok"
         await ctx.send(f"🛡️ **Muaf kanallar:** {kanallar}\n🛡️ **Muaf roller:** {roller}", allowed_mentions=NO_PING)
+
+    # ---------------- Toplu kanal silme (raid temizliği) ----------------
+    @commands.hybrid_command(name="kanalsil", aliases=["kanaltemizle"], usage="[saat]")
+    @app_commands.describe(saat="Sadece son X saatte açılan kanalları sil (boş bırakırsan HEPSİ silinir)")
+    @commands.bot_has_permissions(manage_channels=True)
+    async def kanalsil(self, ctx, saat: int = 0):
+        """Kanalları toplu sil (sadece sunucu sahibi)"""
+        if ctx.author.id != ctx.guild.owner_id:
+            return await ctx.send("❌ Bu komutu sadece sunucu sahibi kullanabilir.")
+        if saat < 0 or saat > 720:
+            return await ctx.send("❌ Saat 0 ile 720 arasında olmalı (0 = hepsi).")
+        sinir = discord.utils.utcnow() - timedelta(hours=saat) if saat else None
+        sayi = sum(1 for c in ctx.guild.channels if c.id != ctx.channel.id and (sinir is None or c.created_at >= sinir))
+        if sayi == 0:
+            return await ctx.send("📭 Silinecek kanal yok.")
+        kapsam = f"son **{saat} saatte** açılan" if saat else "**TÜM**"
+        await ctx.send(
+            f"⚠️ {kapsam} **{sayi}** kanal/kategori silinecek (şu an yazdığın kanal hariç). "
+            f"Bu işlem **geri alınamaz.** Emin misin?",
+            view=KanalSilOnay(ctx.author.id, saat))
 
     # ---------------- Olaylar ----------------
     @commands.Cog.listener()
