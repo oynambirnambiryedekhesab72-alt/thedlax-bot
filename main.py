@@ -13,15 +13,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-SURUM = "1.4"
+SURUM = "1.5"
 DEGISIKLIKLER = (
-    "🧱 `sunucukur`: butonlarla kanal, kategori, rol ve hazır şablon kurma paneli\n"
-    "🛡️ `guvenlik`: küfür, spam, davet ve link korumasını butonlarla aç/kapat\n"
-    "🤬 Çok küfür eden otomatik 10 dakika susturulur\n"
-    "📋 Log sistemi: `logkanal #kanal` (silinen/düzenlenen mesaj, giriş-çıkış, ban, susturma, ses ve daha fazlası)\n"
-    "🎮 Yeni oyunlar: `tkm`, `xox`, `sayitahmin`, `slot`\n"
-    "🧠 AI: `ozet` (sohbet özeti) ve `cevir` (çeviri) eklendi, cevaplar daha hızlı\n"
-    "🔐 API anahtarı artık dosyada değil, ortam değişkeninde"
+    "📈 **Seviye sistemi**: mesaj + ses XP, `seviye`, `siralama`, seviye rolleri, `seviyepanel`\n"
+    "💰 **Ekonomi**: `bakiye`, `gunluk`, `calis`, `kumar`, `gonder`, `zenginler`\n"
+    "🎉 **Çekiliş**: butonlu `cekilis` (bot kapansa da devam eder)\n"
+    "🎫 **Bilet sistemi** ve 🏷️ **buton rol paneli** (`rolpanel`)\n"
+    "👋 `hosgeldin` mesajı ve `otorol`\n"
+    "🛡️ **8 yeni güvenlik filtresi**: büyük harf, toplu etiket, emoji spam, tekrar mesaj, tehlikeli dosya, bozuk yazı, raid, yeni hesap + `muafkanal` / `muafrol`\n"
+    "🧱 **Yeni sunucukur paneli**: 5 hazır şablon (önizlemeli), toplu kanal, yetkili rolleri, hızlı bilet/seviye/hoş geldin kurulumu\n"
+    "📖 `help` artık kategori menüsü\n"
+    "🔧 Düzeltmeler: bellek temizliği, `help` taşma sorunu, isimlerde yanlış küfür alarmı"
 )
 
 intents = discord.Intents.default()
@@ -69,7 +71,10 @@ ai_gecmis = {}        # {(kanal_id, kullanici_id): {"mesajlar": [(rol, metin)], 
 ai_son_soru = {}      # {kullanici_id: zaman}
 arkaplan_gorevleri = set()
 EK_KOMUTLAR = []   # ek.py buraya yeni komutların yardım satırını ekler
-OTOMOD = None      # v14.py güvenlik filtresini buraya bağlar
+OTOMOD = None      # v14.py güvenlik filtresini buraya bağlar (v15.py üstüne ek filtre ekler)
+SEVIYE_HOOK = None   # v15.py seviye sistemini buraya bağlar
+KUR_PANEL = None     # v15.py yeni sunucukur panelini buraya bağlar
+EK_KATEGORILER = {}  # v15.py: {"kategori adı": ["yardım satırı", ...]}  (/help menüsüne eklenir)
 
 
 # ----------------------------------------------------------------------
@@ -344,10 +349,10 @@ async def setup_hook():
     for kayit in list(hatirlatmalar):
         hatirlatma_baslat(kayit)
     try:
-        import v14
-        await v14.yukle(bot, globals())
+        import v15
+        await v15.yukle(bot, globals())
     except Exception as e:
-        print(f"v14.py yüklenemedi: {e!r}")
+        print(f"v15.py yüklenemedi: {e!r}")
     try:
         senkron = await bot.tree.sync()
         print(f"{len(senkron)} slash komutu kaydedildi.")
@@ -1112,81 +1117,122 @@ async def fake_error(ctx, error):
 # ----------------------------------------------------------------------
 # Yardım
 # ----------------------------------------------------------------------
-@bot.hybrid_command(name="help", aliases=["yardim", "yardım", "komutlar"])
-async def help_komutu(ctx):
-    """Tüm komutları göster"""
+YARDIM_ANA = {
+    "🛡️ Moderasyon": (
+        "`kick @kişi [sebep]` Sunucudan at\n"
+        "`ban @kişi/ID [sebep]` Yasakla\n"
+        "`unban <ID>` Yasağı kaldır\n"
+        "`timeout @kişi <süre> [sebep]` Sustur\n"
+        "`untimeout @kişi` Susturmayı kaldır\n"
+        "`temizle <1-100> [@kişi]` Mesaj sil\n"
+        "`warn @kişi [sebep]` Uyar (3 uyarıda otomatik susturur)\n"
+        "`warnings [@kişi]` Uyarıları göster\n"
+        "`clearwarns @kişi` Uyarıları sil\n"
+        "`nick @kişi [isim]` Takma ad\n"
+        "`rolver @kişi @rol` Rol ver\n"
+        "`rolal @kişi @rol` Rol al"
+    ),
+    "🔧 Kanal": (
+        "`yavasmod <süre> [#kanal]` Yavaş mod (0 = kapat)\n"
+        "`lock [#kanal]` / `unlock [#kanal]` Kilitle / aç\n"
+        "`gizle [#kanal]` / `goster [#kanal]` Gizle / göster"
+    ),
+    "ℹ️ Bilgi": (
+        "`ping` Gecikme\n"
+        "`uptime` Bot ne kadardır açık\n"
+        "`surum` Sürüm ve yenilikler\n"
+        "`avatar [@kişi]` Profil fotoğrafı\n"
+        "`userinfo [@kişi]` Kullanıcı bilgisi\n"
+        "`serverinfo` Sunucu bilgisi\n"
+        "`rolbilgi @rol` Rol bilgisi\n"
+        "`snipe` Son silinen mesaj"
+    ),
+    "🎮 Araçlar ve Eğlence": (
+        "`ai <soru>` Yapay zekayla sohbet (konuşmayı hatırlar, botu etiketleyebilir ya da mesajına yanıt verebilirsin)\n"
+        "`aisifirla` AI hafızanı temizle\n"
+        "`afk [sebep]` AFK ol (mesaj yazınca çıkarsın)\n"
+        "`say <mesaj>` Bot söylesin\n"
+        "`embed Başlık | Açıklama` Embed mesaj\n"
+        "`anket Soru | Seçenek1 | Seçenek2` Anket\n"
+        "`zar [yüz]` Zar at\n"
+        "`yazitura` Yazı tura\n"
+        "`sec a | b | c` Rastgele seç\n"
+        "`sor <soru>` Sihirli 8 top\n"
+        "`hesapla <işlem>` Hesap makinesi\n"
+        "`hatirlat <süre> <mesaj>` Hatırlatıcı\n"
+        "`fake @kişi <mesaj>` Kişinin adıyla mesaj (sadece Yönetici)"
+    ),
+}
+
+
+def yardim_sayfalari():
+    sayfalar = dict(YARDIM_ANA)
+    if EK_KOMUTLAR:
+        sayfalar["✨ v1.4 Komutları"] = "\n".join(EK_KOMUTLAR)
+    for ad, satirlar in EK_KATEGORILER.items():
+        sayfalar[ad] = "\n".join(satirlar)
+    return sayfalar
+
+
+def yardim_ana_embed(sayfalar):
     embed = discord.Embed(
         title=f"📖 THEDLAX v{SURUM} Komutları",
         description=(
             "`/` yaz, komutlar kendiliğinden çıkar. Ya da prefix: `td!` / `td/`\n"
-            "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Süre örnekleri: `30s` `5m` `2h` `1d`"
-        ),
+            "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Süre örnekleri: `30s` `5m` `2h` `1d`\n\n"
+            "**Aşağıdaki menüden bir kategori seç:**\n"
+            + "\n".join(f"• {ad}" for ad in sayfalar)
+        )[:4000],
         color=discord.Color.blurple(),
     )
-    embed.add_field(
-        name="🛡️ Moderasyon",
-        value=(
-            "`kick @kişi [sebep]` Sunucudan at\n"
-            "`ban @kişi/ID [sebep]` Yasakla\n"
-            "`unban <ID>` Yasağı kaldır\n"
-            "`timeout @kişi <süre> [sebep]` Sustur\n"
-            "`untimeout @kişi` Susturmayı kaldır\n"
-            "`temizle <1-100> [@kişi]` Mesaj sil\n"
-            "`warn @kişi [sebep]` Uyar (3 uyarıda otomatik susturur)\n"
-            "`warnings [@kişi]` Uyarıları göster\n"
-            "`clearwarns @kişi` Uyarıları sil\n"
-            "`nick @kişi [isim]` Takma ad\n"
-            "`rolver @kişi @rol` Rol ver\n"
-            "`rolal @kişi @rol` Rol al"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🔧 Kanal",
-        value=(
-            "`yavasmod <süre> [#kanal]` Yavaş mod (0 = kapat)\n"
-            "`lock [#kanal]` / `unlock [#kanal]` Kilitle / aç\n"
-            "`gizle [#kanal]` / `goster [#kanal]` Gizle / göster"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="ℹ️ Bilgi",
-        value=(
-            "`ping` Gecikme\n"
-            "`uptime` Bot ne kadardır açık\n"
-            "`surum` Sürüm ve yenilikler\n"
-            "`avatar [@kişi]` Profil fotoğrafı\n"
-            "`userinfo [@kişi]` Kullanıcı bilgisi\n"
-            "`serverinfo` Sunucu bilgisi\n"
-            "`rolbilgi @rol` Rol bilgisi\n"
-            "`snipe` Son silinen mesaj"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🎮 Araçlar ve Eğlence",
-        value=(
-            "`ai <soru>` Yapay zekayla sohbet (konuşmayı hatırlar, botu etiketleyebilir ya da mesajına yanıt verebilirsin)\n"
-            "`aisifirla` AI hafızanı temizle\n"
-            "`afk [sebep]` AFK ol (mesaj yazınca çıkarsın)\n"
-            "`say <mesaj>` Bot söylesin\n"
-            "`embed Başlık | Açıklama` Embed mesaj\n"
-            "`anket Soru | Seçenek1 | Seçenek2` Anket\n"
-            "`zar [yüz]` Zar at\n"
-            "`yazitura` Yazı tura\n"
-            "`sec a | b | c` Rastgele seç\n"
-            "`sor <soru>` Sihirli 8 top\n"
-            "`hesapla <işlem>` Hesap makinesi\n"
-            "`hatirlat <süre> <mesaj>` Hatırlatıcı\n"
-            "`fake @kişi <mesaj>` Kişinin adıyla mesaj (sadece Yönetici)"
-        ),
-        inline=False,
-    )
-    if EK_KOMUTLAR:
-        embed.add_field(name="✨ Yeni Komutlar", value="\n".join(EK_KOMUTLAR)[:1024], inline=False)
     embed.set_footer(text="Yetki gereken komutlarda ilgili yetkin olmalı.")
-    await ctx.send(embed=embed)
+    return embed
+
+
+class YardimSecim(discord.ui.Select):
+    def __init__(self, sayfalar):
+        self.sayfalar = list(sayfalar.items())
+        super().__init__(
+            placeholder="📂 Kategori seç...",
+            options=[discord.SelectOption(label=ad[:100], value=str(i)) for i, (ad, _) in enumerate(self.sayfalar[:25])],
+        )
+
+    async def callback(self, interaction):
+        ad, metin = self.sayfalar[int(self.values[0])]
+        embed = discord.Embed(title=ad, description=metin[:4000], color=discord.Color.blurple())
+        embed.set_footer(text=f"THEDLAX v{SURUM}")
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class YardimView(discord.ui.View):
+    def __init__(self, yazar_id, sayfalar):
+        super().__init__(timeout=180)
+        self.yazar_id = yazar_id
+        self.mesaj = None
+        self.add_item(YardimSecim(sayfalar))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.yazar_id:
+            return True
+        await interaction.response.send_message("Bu menü sana ait, kendi menünü aç: `td!help`", ephemeral=True)
+        return False
+
+    async def on_timeout(self):
+        for c in self.children:
+            c.disabled = True
+        if self.mesaj:
+            try:
+                await self.mesaj.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+@bot.hybrid_command(name="help", aliases=["yardim", "yardım", "komutlar"])
+async def help_komutu(ctx):
+    """Tüm komutları göster"""
+    sayfalar = yardim_sayfalari()
+    view = YardimView(ctx.author.id, sayfalar)
+    view.mesaj = await ctx.send(embed=yardim_ana_embed(sayfalar), view=view)
 
 
 # ----------------------------------------------------------------------
@@ -1204,6 +1250,13 @@ async def on_message(message):
                 return
         except Exception as e:
             print(f"Otomod hatası: {e!r}")
+
+    # Seviye sistemi (komut olmayan normal mesajlara XP verir)
+    if message.guild is not None and SEVIYE_HOOK is not None and not message.content.startswith(PREFIXLER):
+        try:
+            await SEVIYE_HOOK(message)
+        except Exception as e:
+            print(f"Seviye hatası: {e!r}")
 
     icerik = message.content.lower()
     afk_komutu = icerik.startswith(("td!afk", "td/afk"))
