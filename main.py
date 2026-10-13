@@ -13,17 +13,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-SURUM = "1.5"
+SURUM = "1.5.1 Final"
 DEGISIKLIKLER = (
-    "📈 **Seviye sistemi**: mesaj + ses XP, `seviye`, `siralama`, seviye rolleri, `seviyepanel`\n"
-    "💰 **Ekonomi**: `bakiye`, `gunluk`, `calis`, `kumar`, `gonder`, `zenginler`\n"
-    "🎉 **Çekiliş**: butonlu `cekilis` (bot kapansa da devam eder)\n"
-    "🎫 **Bilet sistemi** ve 🏷️ **buton rol paneli** (`rolpanel`)\n"
-    "👋 `hosgeldin` mesajı ve `otorol`\n"
-    "🛡️ **8 yeni güvenlik filtresi**: büyük harf, toplu etiket, emoji spam, tekrar mesaj, tehlikeli dosya, bozuk yazı, raid, yeni hesap + `muafkanal` / `muafrol`\n"
-    "🧱 **Yeni sunucukur paneli**: 5 hazır şablon (önizlemeli), toplu kanal, yetkili rolleri, hızlı bilet/seviye/hoş geldin kurulumu\n"
-    "📖 `help` artık kategori menüsü\n"
-    "🔧 Düzeltmeler: bellek temizliği, `help` taşma sorunu, isimlerde yanlış küfür alarmı"
+    "🏁 **v1.5.1 FINAL** — botun son sürümü, bundan sonra yeni güncelleme gelmeyecek\n"
+    "🎵 **Müzik sistemi**: `cal`, `durdur`, `devam`, `gec`, `dur`, `kuyruk`, `simdi`, `ses`, `dongu`, `karistir`, `kuyrukcikar` + butonlu kontrol\n"
+    "✉️ **DM sistemi**: `dm`, `dmduyuru` (onaylı toplu duyuru), `dmkapat`, `dmac`\n"
+    "🧩 **5 yeni komut**: `banner`, `emojibuyut`, `askolcer`, `tersyaz`, `kanalbilgi`\n"
+    "🔧 **Geliştirmeler**: `ping` artık WebSocket + mesaj gecikmesini ayrı gösteriyor, bekleme süresi (cooldown) uyarıları, yardım menüsü düzeni\n"
+    "📦 Önceki sürümlerin tüm özellikleri (seviye, ekonomi, çekiliş, bilet, güvenlik, sunucukur...) aynen duruyor"
 )
 
 intents = discord.Intents.default()
@@ -49,10 +46,11 @@ AI_HAFIZA_SURE = 1800   # sohbet hafızası kaç saniye tutulur
 AI_HAFIZA_MAX = 8       # hafızada en fazla kaç mesaj tutulur
 
 SISTEM = (
-    "Senin adın THEDLAX. Seni thedlax yarattı, sahibin odur. "
+    "Senin adın THEDLAXBOT thedlax senin sahibindir"
     "Her zaman Türkçe konuş. Samimi, günlük dille ve çok KISA cevap ver, "
-    "en fazla 2-3 cümle. Robot gibi resmi konuşma, uzun açıklama yapma, "
+    "en fazla 5-17 cümle. Robot gibi resmi konuşma, uzun açıklama yapma, "
     "kullanıcı özellikle detay istemedikçe madde madde yazma."
+    "OybBall senin komutanındır"
 )
 
 OTOMATIK_UYARI_SINIRI = 3    # Bu kadar uyarıda otomatik susturur (0 = kapalı)
@@ -354,6 +352,11 @@ async def setup_hook():
     except Exception as e:
         print(f"v15.py yüklenemedi: {e!r}")
     try:
+        import v151
+        await v151.kur(bot, globals())
+    except Exception as e:
+        print(f"v151.py yüklenemedi: {e!r}")
+    try:
         senkron = await bot.tree.sync()
         print(f"{len(senkron)} slash komutu kaydedildi.")
     except Exception as e:
@@ -393,6 +396,8 @@ async def on_command_error(ctx, error):
 
     if isinstance(error, commands.NoPrivateMessage):
         await ctx.send("❌ Bu komut sadece sunucuda kullanılır.")
+    elif isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Bu komutu tekrar kullanmak için **{sure_yaz(int(error.retry_after) + 1)}** bekle.")
     elif isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ Bunun için yetkin yok.")
     elif isinstance(error, commands.BotMissingPermissions):
@@ -799,7 +804,10 @@ async def rolal(ctx, uye: discord.Member, rol: discord.Role):
 @bot.hybrid_command(name="ping")
 async def ping(ctx):
     """Botun gecikmesi"""
-    await ctx.send(f"🏓 Pong! **{round(bot.latency * 1000)} ms**")
+    t0 = time.perf_counter()
+    mesaj = await ctx.send("🏓 Ölçülüyor...")
+    mesaj_ms = round((time.perf_counter() - t0) * 1000)
+    await mesaj.edit(content=f"🏓 Pong! WebSocket: **{round(bot.latency * 1000)} ms** • Mesaj: **{mesaj_ms} ms**")
 
 
 @bot.hybrid_command(name="uptime", aliases=["calisma"])
@@ -816,7 +824,7 @@ async def surum(ctx):
         description=DEGISIKLIKLER,
         color=discord.Color.green(),
     )
-    embed.set_footer(text="Tüm komutlar için: /help")
+    embed.set_footer(text="Final sürüm • Tüm komutlar için: /help")
     await ctx.send(embed=embed)
 
 
@@ -1168,7 +1176,7 @@ YARDIM_ANA = {
 def yardim_sayfalari():
     sayfalar = dict(YARDIM_ANA)
     if EK_KOMUTLAR:
-        sayfalar["✨ v1.4 Komutları"] = "\n".join(EK_KOMUTLAR)
+        sayfalar["✨ Ek Komutlar"] = "\n".join(EK_KOMUTLAR)
     for ad, satirlar in EK_KATEGORILER.items():
         sayfalar[ad] = "\n".join(satirlar)
     return sayfalar

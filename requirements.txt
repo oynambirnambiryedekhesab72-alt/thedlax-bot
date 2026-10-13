@@ -1,2 +1,5 @@
-discord.py
+discord.py[voice]
 google-genai
+yt-dlp
+PyNaCl
+imageio-ffmpeg
