@@ -155,8 +155,19 @@ def _cozumle(sorgu):
     if os.path.exists("cookies.txt"):          # YouTube "bot değilim" engeli için (isteğe bağlı)
         ayar["cookiefile"] = "cookies.txt"
     link = bool(re.match(r"https?://", sorgu))
-    with yt_dlp.YoutubeDL(ayar) as ydl:
-        b = ydl.extract_info(sorgu if link else f"ytsearch1:{sorgu}", download=False)
+
+    def cikar(hedef):
+        with yt_dlp.YoutubeDL(ayar) as ydl:
+            return ydl.extract_info(hedef, download=False)
+
+    if link:
+        b = cikar(sorgu)
+    else:
+        try:
+            b = cikar(f"ytsearch1:{sorgu}")
+        except Exception as e:      # YouTube engelledi ya da hata verdi -> SoundCloud'u dene
+            print(f"YouTube araması başarısız, SoundCloud deneniyor: {str(e)[:300]}")
+            b = cikar(f"scsearch1:{sorgu}")
     if b is not None and b.get("entries"):
         b = next((e for e in b["entries"] if e), None)
     if b is None:
@@ -540,11 +551,12 @@ class V151(commands.Cog):
         except asyncio.TimeoutError:
             return await ctx.send("⏳ Şarkı çok geç bulundu, tekrar dene.")
         except Exception as e:
-            mesaj = str(e)
-            print(f"Müzik arama hatası: {mesaj[:300]}")
-            if "Sign in" in mesaj or "bot" in mesaj.lower():
-                return await ctx.send("❌ YouTube bu sunucudan gelen isteği engelledi. Botun klasörüne `cookies.txt` koyarsan düzelebilir.")
-            return await ctx.send("❌ Şarkı bulunamadı ya da açılamadı. Başka bir isim ya da link dene.")
+            mesaj = re.sub(r"\x1b\[[0-9;]*m", "", str(e))
+            print(f"Müzik arama hatası: {mesaj[:500]}")
+            if "Sign in to confirm" in mesaj:
+                return await ctx.send("❌ YouTube bu sunucuyu engelledi. Link yerine **şarkı adını** yaz (SoundCloud'dan arayacağım).")
+            sebep = mesaj.replace("ERROR: ", "").replace("`", "'")[:180]
+            return await ctx.send(f"❌ Şarkı açılamadı.\n`{sebep}`")
         if bilgi["canli"]:
             return await ctx.send("❌ Canlı yayınlar desteklenmiyor.")
         if bilgi["sure"] and bilgi["sure"] > SARKI_MAX_SN:
