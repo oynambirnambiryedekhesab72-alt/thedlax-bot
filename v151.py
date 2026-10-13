@@ -48,6 +48,7 @@ SARKI_MAX_SN = 3 * 3600      # Bundan uzun videolar çalınmaz
 BOSTA_SN = 180               # Çalan yoksa kaç saniye sonra kanaldan çıksın
 YALNIZ_SN = 60               # Kanalda kimse kalmazsa kaç saniye sonra çıksın
 DM_TOPLU_MAX = 100           # dmduyuru tek seferde en fazla kaç kişiye
+PARA_BAS_MAX = 1_000_000_000 # parabas tek seferde en fazla ne kadar basar
 DM_ARALIK = 1.5              # dmduyuru'da iki mesaj arası saniye (Discord limiti için)
 
 veri = {"dm_kapali": []}
@@ -492,6 +493,7 @@ YARDIM = {
         "`askolcer @kişi` Aşk ölçer 💘",
         "`tersyaz <metin>` Yazıyı ters çevir",
         "`kanalbilgi [#kanal]` Kanal bilgisi",
+        "`parabas @kişi <miktar>` Birinin cüzdanına para bas (sadece Yönetici)",
     ],
 }
 
@@ -956,6 +958,24 @@ class V151(commands.Cog):
             e.add_field(name="Bitrate", value=f"{kanal.bitrate // 1000} kbps", inline=True)
             e.add_field(name="Şu an içeride", value=str(len(kanal.members)), inline=True)
         await ctx.send(embed=e)
+
+
+    # ================= 💰 Admin araçları =================
+    @commands.hybrid_command(name="parabas", aliases=["paraver", "moneyadd"], usage="@kişi <miktar>")
+    @app_commands.describe(uye="Para basılacak kişi", miktar="Basılacak miktar")
+    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    async def parabas(self, ctx, uye: discord.Member, miktar: int):
+        """Birinin cüzdanına para bas (sadece Yönetici)"""
+        if uye.bot:
+            return await ctx.send("🤖 Botların cüzdanı yok.")
+        if not 1 <= miktar <= PARA_BAS_MAX:
+            return await ctx.send(f"❌ Miktar 1 ile {PARA_BAS_MAX:,} arasında olmalı.".replace(",", "."))
+        from v15 import eko, eko_ekle, para
+        eko_ekle(ctx.guild.id, uye.id, miktar)
+        yeni = eko(ctx.guild.id, uye.id)["bakiye"]
+        await ctx.send(f"🖨️ {uye.mention} cüzdanına **{para(miktar)} 🪙** basıldı. Yeni bakiye: **{para(yeni)} 🪙**",
+                       allowed_mentions=NO_PING)
 
 
 # ----------------------------------------------------------------------
