@@ -2,6 +2,7 @@ import os
 import re
 import ast
 import json
+import threading
 import time
 import random
 import asyncio
@@ -20,6 +21,7 @@ DEGISIKLIKLER = (
     "✉️ **DM sistemi**: `dm`, `dmduyuru` (onaylı toplu duyuru), `dmkapat`, `dmac`\n"
     "🧩 **5 yeni komut**: `banner`, `emojibuyut`, `askolcer`, `tersyaz`, `kanalbilgi`\n"
     "🔧 **Geliştirmeler**: `ping` artık WebSocket + mesaj gecikmesini ayrı gösteriyor, bekleme süresi (cooldown) uyarıları, yardım menüsü düzeni\n"
+    "🧠 **Kalıcı AI hafızası**: bot kapansa da unutmaz, eski konuşmaları özetleyerek hatırlar, yanıtladığın mesajı okur\n"
     "📦 Önceki sürümlerin tüm özellikleri (seviye, ekonomi, çekiliş, bilet, güvenlik, sunucukur...) aynen duruyor"
 )
 
@@ -42,15 +44,17 @@ GEMINI_KEY = p1 + p2
 
 AI_MODELLER = ["gemini-3.1-flash-lite", "gemini-3.6-flash"]
 AI_BEKLEME = 3          # aynı kişi en az kaç saniye arayla soru sorabilir
-AI_HAFIZA_SURE = 1800   # sohbet hafızası kaç saniye tutulur
-AI_HAFIZA_MAX = 8       # hafızada en fazla kaç mesaj tutulur
+AI_HAFIZA_SURE = 10 ** 9  # sohbet hafızası süresi (saniye): pratikte sonsuz, hafıza hiç silinmez
+AI_HAFIZA_MAX = 40        # hafızada son kaç mesaj olduğu gibi tutulur (fazlası otomatik özetlenir)
+AI_HAFIZA_KALAN = 16      # özetleme yapılınca son kaç mesaj olduğu gibi kalsın
+AI_KAYIT_MAX = 300        # en fazla kaç ayrı sohbetin hafızası saklanır
+AI_DOSYA = "veri_ai.json" # hafıza buraya kaydedilir (bot kapanıp açılsa da kalır)
 
 SISTEM = (
-    "Senin adın THEDLAXBOT thedlax senin sahibindir"
+    "Senin adın THEDLAX. Seni thedlax yarattı, sahibin odur. "
     "Her zaman Türkçe konuş. Samimi, günlük dille ve çok KISA cevap ver, "
-    "en fazla 5-17 cümle. Robot gibi resmi konuşma, uzun açıklama yapma, "
+    "en fazla 2-3 cümle. Robot gibi resmi konuşma, uzun açıklama yapma, "
     "kullanıcı özellikle detay istemedikçe madde madde yazma."
-    "OybBall senin komutanındır"
 )
 
 OTOMATIK_UYARI_SINIRI = 3    # Bu kadar uyarıda otomatik susturur (0 = kapalı)
@@ -306,6 +310,93 @@ def gemini_istek(contents, sistem):
     return None, son_hata
 
 
+def ai_yukle():
+    try:
+        with open(AI_DOSYA, "r", encoding="utf-8") as f:
+            kayitlar = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"AI hafızası okunamadı: {e!r}")
+        return
+    for anahtar, d in kayitlar.items():
+        try:
+            k, u = anahtar.split(":")
+            ai_gecmis[(int(k), int(u))] = {
+                "mesajlar": [(r, t) for r, t in d["mesajlar"]],
+                "son": d.get("son", time.time()),
+                "ozet": d.get("ozet", ""),
+            }
+        except Exception:
+            continue
+
+
+_ai_kilit = threading.Lock()
+
+
+def _ai_yaz(metin):
+    with _ai_kilit:
+        gecici = AI_DOSYA + ".tmp"
+        try:
+            with open(gecici, "w", encoding="utf-8") as f:
+                f.write(metin)
+            os.replace(gecici, AI_DOSYA)
+        except Exception as e:
+            print(f"AI hafızası kaydedilemedi: {e!r}")
+
+
+async def ai_kaydet():
+    kayitlar = {
+        f"{k[0]}:{k[1]}": {
+            "mesajlar": [[r, t[:1500]] for r, t in v["mesajlar"]],
+            "son": v["son"],
+            "ozet": v.get("ozet", ""),
+        }
+        for k, v in ai_gecmis.items()
+    }
+    await asyncio.to_thread(_ai_yaz, json.dumps(kayitlar, ensure_ascii=False))
+
+
+ai_ozet_devam = set()
+
+
+async def ai_ozetle(anahtar):
+    """Eski mesajları kısa bir özete çevirir; böylece hafıza sınırsız büyür ama istek küçük kalır."""
+    if anahtar in ai_ozet_devam:
+        return
+    ai_ozet_devam.add(anahtar)
+    try:
+        kayit = ai_gecmis.get(anahtar)
+        if not kayit or len(kayit["mesajlar"]) <= AI_HAFIZA_MAX:
+            return
+        n = len(kayit["mesajlar"]) - AI_HAFIZA_KALAN
+        eski = list(kayit["mesajlar"][:n])
+        konusma = "\n".join(f"{'Kullanıcı' if r == 'user' else 'Bot'}: {t[:400]}" for r, t in eski)
+        istek = (
+            f"Şimdiye kadarki özet: {kayit.get('ozet') or '(yok)'}\n\n"
+            f"Yeni konuşma:\n{konusma}\n\n"
+            "Bunları birleştirip kullanıcı hakkındaki önemli bilgileri (isim, tercihler, anlattığı olaylar, "
+            "konuşulan konular, verilen sözler) koruyan, en fazla 900 karakterlik TEK bir Türkçe özet yaz. "
+            "Sadece özeti yaz."
+        )
+        cevap, _ = await asyncio.to_thread(
+            gemini_istek, [{"role": "user", "parts": [{"text": istek}]}], "Sen bir konuşma özetleyicisin.")
+        if not cevap:
+            return
+        kayit = ai_gecmis.get(anahtar)
+        if not kayit or list(kayit["mesajlar"][:n]) != eski:
+            return
+        kayit["ozet"] = cevap.strip()[:1500]
+        del kayit["mesajlar"][:n]
+        while kayit["mesajlar"] and kayit["mesajlar"][0][0] != "user":
+            kayit["mesajlar"].pop(0)
+        await ai_kaydet()
+    except Exception as e:
+        print(f"AI özetleme hatası: {e!r}")
+    finally:
+        ai_ozet_devam.discard(anahtar)
+
+
 async def ai_cevapla(kullanici, kanal_id, soru):
     """Her zaman gönderilecek bir metin döner (cevap ya da hata mesajı)."""
     simdi = time.time()
@@ -319,18 +410,28 @@ async def ai_cevapla(kullanici, kanal_id, soru):
     if kayit and simdi - kayit["son"] > AI_HAFIZA_SURE:
         kayit = None
     mesajlar = list(kayit["mesajlar"]) if kayit else []
+    ozet = kayit.get("ozet", "") if kayit else ""
     mesajlar.append(("user", soru))
 
     contents = [{"role": r, "parts": [{"text": t}]} for r, t in mesajlar]
     sistem = SISTEM + f" Şu an konuştuğun kişinin adı: {kullanici.display_name}."
+    if ozet:
+        sistem += f" Bu kişiyle daha önceki konuşmalarınızın özeti (bunları hatırlıyorsun): {ozet}"
     cevap, hata = await asyncio.to_thread(gemini_istek, contents, sistem)
 
     if cevap:
         mesajlar.append(("model", cevap))
-        mesajlar = mesajlar[-AI_HAFIZA_MAX:]
+        mesajlar = mesajlar[-(AI_HAFIZA_MAX * 2):]
         while mesajlar and mesajlar[0][0] != "user":
             mesajlar.pop(0)
-        ai_gecmis[anahtar] = {"mesajlar": mesajlar, "son": simdi}
+        ai_gecmis[anahtar] = {"mesajlar": mesajlar, "son": simdi, "ozet": ozet}
+        while len(ai_gecmis) > AI_KAYIT_MAX:
+            ai_gecmis.pop(min(ai_gecmis, key=lambda k: ai_gecmis[k]["son"]), None)
+        if len(mesajlar) > AI_HAFIZA_MAX:
+            gorev = asyncio.create_task(ai_ozetle(anahtar))
+            arkaplan_gorevleri.add(gorev)
+            gorev.add_done_callback(arkaplan_gorevleri.discard)
+        await ai_kaydet()
         return cevap
     if hata == "HTTP 429":
         return "⏳ Şu an çok fazla istek var, biraz sonra tekrar dene."
@@ -344,6 +445,7 @@ async def ai_cevapla(kullanici, kanal_id, soru):
 # ----------------------------------------------------------------------
 async def setup_hook():
     veri_yukle()
+    ai_yukle()
     for kayit in list(hatirlatmalar):
         hatirlatma_baslat(kayit)
     try:
@@ -437,6 +539,15 @@ async def ai(ctx, *, soru: str = None):
     if not soru:
         await ctx.send("Efendim? Sorunu yazmak için: `td/ai <sorun>`")
         return
+    # Bir mesaja yanıt veriliyorsa o mesajı da oku (botun önceki cevabı dahil)
+    ref = getattr(ctx.message, "reference", None)
+    if ref is not None and isinstance(ref.resolved, discord.Message):
+        eski = ref.resolved
+        icerik = (eski.content or "").strip()
+        if not icerik and eski.embeds:
+            icerik = (eski.embeds[0].description or eski.embeds[0].title or "").strip()
+        if icerik:
+            soru = f'[Yanıtladığı mesaj — {eski.author.display_name}: "{icerik[:600]}"]\n{soru}'
     async with ctx.typing():
         cevap = await ai_cevapla(ctx.author, ctx.channel.id, soru)
     for i in range(0, len(cevap), 1900):
@@ -447,7 +558,8 @@ async def ai(ctx, *, soru: str = None):
 async def aisifirla(ctx):
     """Yapay zekanın seninle olan sohbet hafızasını temizle"""
     ai_gecmis.pop((ctx.channel.id, ctx.author.id), None)
-    await ctx.send("🧠 Bu kanaldaki sohbet hafızan temizlendi.")
+    await ai_kaydet()
+    await ctx.send("🧠 Bu kanaldaki sohbet hafızan (özet dahil) temizlendi.")
 
 
 # ----------------------------------------------------------------------
