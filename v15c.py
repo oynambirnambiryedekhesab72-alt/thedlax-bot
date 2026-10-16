@@ -279,8 +279,57 @@ class Ses(commands.Cog):
         await ctx.send(embed=discord.Embed(title="🎙️ Ses liderleri", description="\n".join(satir),
                                             color=discord.Color.gold()), allowed_mentions=NO_PING)
 
-    # dm ve kanalbilgi komutları v151.py içinde (çakışmasın diye buradan kaldırıldı)
-    @commands.command(name="sihirlitop", aliases=["8ball"], usage="<soru>")
+    # ---------------- DM (bot üzerinden özel mesaj) ----------------
+    @commands.command(name="dm", aliases=["ozelmesaj"], usage="@kişi <mesaj>")
+    @app_commands.describe(uye="Mesaj gidecek kişi", mesaj="Gönderilecek mesaj")
+    @commands.has_permissions(manage_guild=True)
+    @commands.guild_only()
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    async def dm(self, ctx, uye: discord.Member, *, mesaj: str):
+        """Yazdığın mesajı bot söylemiş gibi birine özelden gönder"""
+        if ctx.interaction is None:      # / değil td/ ile yazıldıysa komut mesajını sil
+            try:
+                await ctx.message.delete()
+            except discord.HTTPException:
+                pass
+            kw = {"delete_after": 6}
+        else:                            # / ile yazıldıysa cevap sadece sana görünür
+            kw = {"ephemeral": True}
+        if uye.bot:
+            return await ctx.send("❌ Botlara DM atılamaz.", **kw)
+        metin = mesaj.strip()[:1500]
+        if not metin:
+            return await ctx.send("❌ Mesaj boş olamaz.", **kw)
+        try:
+            await uye.send(metin)
+        except discord.HTTPException:
+            return await ctx.send(f"❌ {uye.display_name} kişisinin DM'leri kapalı, gönderemedim.", **kw)
+        await log(ctx.guild, "📩 DM gönderildi", f"{ctx.author.mention} → {uye.mention}\n{metin[:300]}", discord.Color.blurple())
+        await ctx.send(f"✅ {uye.display_name} kişisine gönderildi.", **kw)
+
+    # ---------------- ek komutlar ----------------
+    @commands.command(name="kanalbilgi", aliases=["channelinfo"], usage="[#kanal]")
+    @app_commands.describe(kanal="Bakılacak kanal (boşsa bu kanal)")
+    async def kanalbilgi(self, ctx, kanal: discord.abc.GuildChannel = None):
+        """Bir kanalın detaylı bilgisi"""
+        k = kanal or ctx.channel
+        e = discord.Embed(title=f"📂 {k.name}", color=discord.Color.blurple())
+        e.add_field(name="Tür", value=str(k.type).replace("_", " ").title())
+        e.add_field(name="ID", value=f"`{k.id}`")
+        e.add_field(name="Kategori", value=k.category.name if getattr(k, "category", None) else "Yok")
+        e.add_field(name="Oluşturulma", value=f"<t:{int(k.created_at.timestamp())}:R>")
+        if isinstance(k, discord.TextChannel):
+            e.add_field(name="Yavaş mod", value=f"{k.slowmode_delay} sn" if k.slowmode_delay else "Kapalı")
+            e.add_field(name="NSFW", value="Evet" if k.is_nsfw() else "Hayır")
+            if k.topic:
+                e.add_field(name="Konu", value=k.topic[:300], inline=False)
+        elif isinstance(k, (discord.VoiceChannel, discord.StageChannel)):
+            e.add_field(name="Kişi limiti", value=str(k.user_limit) if k.user_limit else "Sınırsız")
+            e.add_field(name="Ses kalitesi", value=f"{k.bitrate // 1000} kbps")
+            e.add_field(name="İçerideki", value=str(len(k.members)))
+        await ctx.send(embed=e)
+
+    @commands.command(name="sihirlitop", usage="<soru>")
     @app_commands.describe(soru="Sihirli topa sorun")
     async def sihirlitop(self, ctx, *, soru: str):
         """Sihirli 8 topa evet/hayır sorusu sor"""
@@ -293,7 +342,11 @@ class Ses(commands.Cog):
 
 async def kur(bot, g):
     await bot.add_cog(Ses(bot, g))
-    # müzik sistemi v151.py içinde (muzik.py ile çakıştığı için buradan yüklenmiyor)
+    try:                            # müzik sistemi (muzik.py yoksa bot yine de açılır)
+        import muzik
+        await muzik.kur(bot, g)
+    except Exception as e:
+        print(f"muzik yüklenemedi: {e!r}")
     g["EK_KATEGORILER"]["🔊 Ses (v1.6)"] = [
         "`ozelsesayarla` ➕ Oda Aç kanalı kur (girene özel oda açılır)",
         "`ozelsesbitir` Sistemi kapat",
@@ -302,5 +355,7 @@ async def kur(bot, g):
         "`seslider` Seste en çok vakit geçirenler",
     ]
     g["EK_KATEGORILER"]["✨ Yeni (v1.6)"] = [
+        "`kanalbilgi [#kanal]` Kanal detayları",
         "`sihirlitop <soru>` Sihirli 8 top",
+        "`dm @kişi <mesaj>` Mesajı bot söylemiş gibi özelden gönder",
     ]
