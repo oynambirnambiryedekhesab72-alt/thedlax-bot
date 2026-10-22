@@ -3,7 +3,7 @@
 THEDLAX BOT v2.0 - VIP modülü
 
 main.py bunu v18.py'den sonra otomatik yükler. Bu dosya yoksa bot yine açılır.
-Komutlar (hepsi hem td!komut hem /komut):
+Komutlar (td!komut ile çalışır; Discord 100 slash sınırı dolu olduğu için slash yok):
   👑 VIP   : vipkur, vipver, vipal, viplistesi, vip, vipgunluk  (3 kademe: VIP, VIP+, VIP MAX)
   ✨ VIP+  : viprol (kişisel renkli rol), vipkanal (VIP'lere özel kanal)
   🎨 Çizim : ciz (yapay zekayla resim çizer, sadece VIP)
@@ -281,7 +281,7 @@ class V20(commands.Cog):
                 pass
 
     # ================= 👑 Komutlar =================
-    @commands.hybrid_command(name="vipkur", usage="[@rol]")
+    @commands.hybrid_command(with_app_command=False, name="vipkur", usage="[@rol]")
     @commands.has_permissions(manage_guild=True)
     @commands.bot_has_permissions(manage_roles=True)
     @commands.guild_only()
@@ -308,7 +308,7 @@ class V20(commands.Cog):
             f"✅ VIP rolü {rol.mention} olarak ayarlandı.\n"
             f"VIP vermek için: `td!vipver @kişi [gün]`", allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="vipver", aliases=["vipekle"], usage="@kişi [gün] [kademe 1-3]")
+    @commands.hybrid_command(with_app_command=False, name="vipver", aliases=["vipekle"], usage="@kişi [gün] [kademe 1-3]")
     @commands.has_permissions(manage_roles=True)
     @commands.bot_has_permissions(manage_roles=True)
     @commands.guild_only()
@@ -347,7 +347,7 @@ class V20(commands.Cog):
         await ctx.send(f"{KADEMELER[kademe]['emoji']} {uye.mention} artık **{KADEMELER[kademe]['ad']}**! "
                        f"Süre: {bitis_yaz(bitis)}", allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="vipal", aliases=["vipsil"], usage="@kişi")
+    @commands.hybrid_command(with_app_command=False, name="vipal", aliases=["vipsil"], usage="@kişi")
     @commands.has_permissions(manage_roles=True)
     @commands.bot_has_permissions(manage_roles=True)
     @commands.guild_only()
@@ -368,7 +368,7 @@ class V20(commands.Cog):
                 return await ctx.send("❌ Rol alınamadı (rol sırası ya da yetki sorunu).")
         await ctx.send(f"✅ {uye.mention} kişisinin VIP'liği alındı.", allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="viplistesi", aliases=["viplist", "viplar"])
+    @commands.hybrid_command(with_app_command=False, name="viplistesi", aliases=["viplist", "viplar"])
     @commands.guild_only()
     async def viplistesi(self, ctx):
         """VIP üyeleri listele"""
@@ -382,7 +382,7 @@ class V20(commands.Cog):
                           color=discord.Color.gold())
         await ctx.send(embed=e, allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="vip", usage="[@kişi]")
+    @commands.hybrid_command(with_app_command=False, name="vip", usage="[@kişi]")
     @commands.guild_only()
     async def vip(self, ctx, uye: discord.Member = None):
         """VIP durumunu ve avantajları göster"""
@@ -418,7 +418,7 @@ class V20(commands.Cog):
         e.add_field(name="Avantajlar", value="\n".join(avantaj), inline=False)
         await ctx.send(embed=e, allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="vipgunluk", aliases=["vipdaily"])
+    @commands.hybrid_command(with_app_command=False, name="vipgunluk", aliases=["vipdaily"])
     @commands.guild_only()
     async def vipgunluk(self, ctx):
         """VIP'lere özel günlük bonus (seri bonuslu)"""
@@ -447,7 +447,7 @@ class V20(commands.Cog):
         await ctx.send(f"{KADEMELER[kademe_al(ctx.guild.id, ctx.author.id)]['emoji']} VIP bonusun: "
                        f"**{para(miktar)} 🪙** ve **{xp} XP**!{seri_yazi}")
 
-    @commands.hybrid_command(name="viprol", usage="<renk> [isim]")
+    @commands.hybrid_command(with_app_command=False, name="viprol", usage="<renk> [isim]")
     @app_commands.describe(renk="#ff8800 gibi kod ya da kırmızı, mavi, yeşil, mor...",
                            isim="Rolünde yazacak isim (boşsa adın)")
     @commands.bot_has_permissions(manage_roles=True)
@@ -485,7 +485,7 @@ class V20(commands.Cog):
         isaretle20()
         await ctx.send(f"✨ Kişisel rolün hazır: {rol.mention}", allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="vipkanal")
+    @commands.hybrid_command(with_app_command=False, name="vipkanal")
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
@@ -514,7 +514,7 @@ class V20(commands.Cog):
         isaretle20()
         await ctx.send(f"✅ VIP kanalı açıldı: {kanal.mention}")
 
-    @commands.hybrid_command(name="ciz", aliases=["çiz", "draw"], usage="<ne çizilsin>")
+    @commands.hybrid_command(with_app_command=False, name="ciz", aliases=["çiz", "draw"], usage="<ne çizilsin>")
     @app_commands.describe(tarif="Ne çizilsin? Ne kadar ayrıntılı yazarsan o kadar güzel olur")
     @commands.guild_only()
     async def ciz(self, ctx, *, tarif: str):
@@ -657,16 +657,3 @@ async def kur(bot, g):
     atexit.register(lambda: kaydet() if kirli else None)
     g["EK_KATEGORILER"].update(YARDIM)
     print(f"v20 yüklendi: VIP + ciz komutları hazır (anahtar {'var' if GEMINI_KEY else 'YOK'}).")
-
-    # Discord en fazla 100 slash komutuna izin verir; aşılırsa HİÇBİRİ kaydolmaz.
-    # Sınır aşılırsa v20 komutlarının slash halini (td! halı kalır) önem sırasına göre çıkar.
-    fazla = len(bot.tree.get_commands()) - 100
-    if fazla > 0:
-        cikarilan = []
-        for ad in ("viprol", "vipkanal", "vipal", "vipver", "vipkur", "viplistesi", "vipgunluk", "vip", "ciz"):
-            if fazla <= 0:
-                break
-            if bot.tree.remove_command(ad) is not None:
-                cikarilan.append(ad)
-                fazla -= 1
-        print(f"Slash sınırı (100) aşıldı, şu komutlar sadece td! ile çalışacak: {', '.join(cikarilan)}")
