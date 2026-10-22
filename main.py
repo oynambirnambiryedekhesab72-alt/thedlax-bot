@@ -9,6 +9,8 @@ import operator
 import datetime
 import urllib.request
 import urllib.error
+import traceback
+import importlib
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -41,6 +43,9 @@ _orijinal_get_context = bot.get_context
 
 
 async def _get_context_turkce(message, *, cls=commands.Context):
+    # Slash komutları da buradan geçer ve onlarda mesaj metni yoktur: dokunmadan devam et
+    if not isinstance(message, discord.Message):
+        return await _orijinal_get_context(message, cls=cls)
     icerik = message.content or ""
     for p in PREFIXLER:
         if icerik.startswith(p):
@@ -95,6 +100,7 @@ EK_KOMUTLAR = []   # ek.py buraya yeni komutların yardım satırını ekler
 OTOMOD = None      # v14.py güvenlik filtresini buraya bağlar (v15.py üstüne ek filtre ekler)
 SEVIYE_HOOK = None   # v15.py seviye sistemini buraya bağlar
 KUR_PANEL = None     # v15.py yeni sunucukur panelini buraya bağlar
+MODUL_DURUM = {}      # hangi modül yüklendi / hata verdi (td!modul ile görülür)
 EK_KATEGORILER = {}  # v15.py: {"kategori adı": ["yardım satırı", ...]}  (/help menüsüne eklenir)
 
 
@@ -369,31 +375,16 @@ async def setup_hook():
     veri_yukle()
     for kayit in list(hatirlatmalar):
         hatirlatma_baslat(kayit)
-    try:
-        import v15
-        await v15.yukle(bot, globals())
-    except Exception as e:
-        print(f"v15.py yüklenemedi: {e!r}")
-    try:
-        import v151                      # müzik, DM, banner, parabas...
-        await v151.kur(bot, globals())
-    except Exception as e:
-        print(f"v151.py yüklenemedi: {e!r}")
-    try:
-        import v18                       # market, banka, sicil, quiz, aktiflik...
-        await v18.kur(bot, globals())
-    except Exception as e:
-        print(f"v18.py yüklenemedi: {e!r}")
-    try:
-        import v20                       # VIP sistemi
-        await v20.kur(bot, globals())
-    except Exception as e:
-        print(f"v20.py yüklenemedi: {e!r}")
-    try:
-        import v20_ai                    # hızlı yapay zeka + eğitim (ogret)
-        await v20_ai.kur(bot, globals())
-    except Exception as e:
-        print(f"v20_ai.py yüklenemedi: {e!r}")
+    # Modülleri sırayla yükle; biri hata verirse sebebi hem konsola hem `td!modul` komutuna yazılır
+    for ad, giris in (("v15", "yukle"), ("v151", "kur"), ("v18", "kur"), ("v20", "kur"), ("v20_ai", "kur")):
+        try:
+            modul = importlib.import_module(ad)
+            await getattr(modul, giris)(bot, globals())
+            MODUL_DURUM[ad] = "✅ yüklendi"
+        except Exception as e:
+            traceback.print_exc()
+            MODUL_DURUM[ad] = f"❌ {type(e).__name__}: {str(e)[:200]}"
+            print(f"{ad}.py yüklenemedi: {e!r}")
     try:
         senkron = await bot.tree.sync()
         print(f"{len(senkron)} slash komutu kaydedildi.")
@@ -402,6 +393,19 @@ async def setup_hook():
 
 
 bot.setup_hook = setup_hook
+
+
+@bot.hybrid_command(name="modul", aliases=["moduller"], with_app_command=False)
+@commands.has_permissions(manage_guild=True)
+async def modul(ctx):
+    """Hangi modüllerin yüklendiğini göster (yetkili)"""
+    klasor = os.path.dirname(os.path.abspath(__file__))
+    satirlar = []
+    for ad in ("v15", "v151", "v18", "v20", "v20_ai"):
+        dosya = "dosya var" if os.path.exists(os.path.join(klasor, ad + ".py")) else "DOSYA YOK"
+        satirlar.append(f"`{ad}.py` ({dosya}): {MODUL_DURUM.get(ad, '⏳ denenmedi')}")
+    kontrol = ", ".join(f"{k} {'✅' if bot.get_command(k) else '❌'}" for k in ("vip", "ciz", "satinal", "ogret"))
+    await ctx.send(f"📦 **Modüller** (v{SURUM})\n" + "\n".join(satirlar) + f"\nKomut kontrolü: {kontrol}")
 
 
 @bot.event
