@@ -50,6 +50,7 @@ VIP_UYARI_SURE = 86400       # bitmeye kaç saniye kala DM ile haber verilsin
 
 CIZ_BEKLEME = 30             # ciz: kişi başı bekleme (saniye)
 CIZ_MAX_HARF = 500           # tarif en fazla kaç karakter
+CIZ_ZAMAN_ASIMI = 75         # çizim en fazla kaç saniye beklensin (sonra hata mesajı verilir)
 # Sırayla denenir; model bulunamazsa (404) bir sonrakine geçer.
 RESIM_MODELLER = ["gemini-3.1-flash-image", "gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]
 
@@ -174,41 +175,52 @@ def resim_cikar(sonuc):
     return None, "bos"
 
 
-def resim_uret(tarif):
-    """İnternete bağlanır (ayrı thread'de çalışır). (png_bayt, hata_kodu) döner."""
+def resim_model(model, tarif):
+    """Tek bir modele sorar (ayrı thread'de çalışır). (png_bayt, hata_kodu, detay) döner."""
     if not GEMINI_KEY:
-        return None, "anahtar"
+        return None, "anahtar", "API anahtarı bulunamadı"
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
+            "contents": [{"parts": [{"text": tarif}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": GEMINI_KEY},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=40) as r:
+            sonuc = json.loads(r.read().decode("utf-8"))
+        bayt, neden = resim_cikar(sonuc)
+        if bayt:
+            return bayt, "", ""
+        return None, neden, "model resim döndürmedi" if neden == "bos" else "güvenlik filtresi"
+    except urllib.error.HTTPError as e:
+        govde = e.read().decode("utf-8", errors="ignore")
+        try:
+            detay = json.loads(govde).get("error", {}).get("message", govde)
+        except Exception:
+            detay = govde
+        print(f"Resim hatası ({model}) HTTP {e.code}: {detay[:300]}")
+        kod = "kota" if e.code == 429 else ("yetki" if e.code in (400, 403) else f"HTTP {e.code}")
+        return None, kod, f"HTTP {e.code}: {detay[:200]}"
+    except Exception as e:
+        print(f"Resim hatası ({model}): {e!r}")
+        return None, type(e).__name__, repr(e)[:200]
+
+
+def resim_uret(tarif):
+    """Modelleri sırayla dener. (png_bayt, hata_kodu) döner."""
     son = "bilinmiyor"
     for model in RESIM_MODELLER:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            payload = {
-                "contents": [{"parts": [{"text": tarif}]}],
-                "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
-            }
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers={"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": GEMINI_KEY},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=90) as r:
-                sonuc = json.loads(r.read().decode("utf-8"))
-            bayt, neden = resim_cikar(sonuc)
-            if bayt:
-                return bayt, ""
-            if neden == "engel":
-                return None, "engel"
-            son = neden
-        except urllib.error.HTTPError as e:
-            govde = e.read().decode("utf-8", errors="ignore")
-            print(f"Resim hatası ({model}) HTTP {e.code}: {govde[:500]}")
-            if e.code == 429:
-                return None, "kota"
-            son = "yetki" if e.code in (400, 403) else f"HTTP {e.code}"
-        except Exception as e:
-            print(f"Resim hatası ({model}): {e!r}")
-            son = type(e).__name__
+        bayt, kod, _ = resim_model(model, tarif)
+        if bayt:
+            return bayt, ""
+        if kod in ("engel", "kota", "anahtar"):
+            return None, kod              # başka model denemenin faydası yok
+        son = kod
     return None, son
 
 
@@ -218,6 +230,7 @@ CIZ_HATA = {
     "kota": "⏳ Yapay zeka şu an çok yoğun ya da günlük kotası doldu. Biraz sonra tekrar dene.",
     "yetki": "❌ Anahtarın resim üretmeye yetkisi yok gibi görünüyor (ücretli plan gerekebilir).",
     "bos": "❌ Yapay zeka bu sefer resim üretemedi, tarifi değiştirip tekrar dene.",
+    "zaman": "⏳ Çizim çok uzun sürdü, bir daha dene.",
 }
 
 
@@ -233,7 +246,7 @@ YARDIM = {
         "`vip [@kişi]` VIP durumu ve avantajlar",
         f"`vipgunluk` günlük VIP bonusu (+{VIP_GUNLUK_PARA} 🪙 +{VIP_GUNLUK_XP} XP, seri bonuslu)",
         "`viprol <renk> [isim]` kendi renkli rolünü yap (VIP)",
-        "`ciz <tarif>` yapay zekayla resim çiz (VIP)",
+        "`ciz <tarif>` yapay zekayla resim çiz (VIP)  •  `ciztest` çizim hatasını göster (Sunucuyu Yönet)",
     ],
 }
 
@@ -527,18 +540,51 @@ class V20(commands.Cog):
         self.ciz_son[ctx.author.id] = simdi
         kayit["adet"] += 1
         isaretle20()
-        async with ctx.typing():
-            bayt, hata = await asyncio.to_thread(resim_uret, tarif)
+        await ctx.defer()
+        durum = await ctx.send("🎨 Çiziyorum... (10-40 saniye sürebilir)")
+        try:
+            bayt, hata = await asyncio.wait_for(asyncio.to_thread(resim_uret, tarif), CIZ_ZAMAN_ASIMI)
+        except asyncio.TimeoutError:
+            bayt, hata = None, "zaman"
+        except Exception as e:
+            print(f"ciz hatası: {e!r}")
+            bayt, hata = None, type(e).__name__
         if not bayt:
             kayit["adet"] = max(0, kayit["adet"] - 1)      # başarısız denemeler hakkından düşmez
             self.ciz_son.pop(ctx.author.id, None)
             isaretle20()
-            return await ctx.send(CIZ_HATA.get(hata, f"❌ Resim çizilemedi ({hata})."))
+            yazi = CIZ_HATA.get(hata, f"❌ Resim çizilemedi ({hata}). Sebebini görmek için yetkili `td!ciztest` yazabilir.")
+            try:
+                return await durum.edit(content=yazi)
+            except discord.HTTPException:
+                return await ctx.send(yazi)
         kalan_hak = limit - kayit["adet"]
         await ctx.send(
             f"🎨 **{tarif[:200]}**\n_Yapay zeka ile çizildi • bugün {kalan_hak} hakkın kaldı_",
             file=discord.File(io.BytesIO(bayt), filename="resim.png"),
             allowed_mentions=NO_PING)
+        try:
+            await durum.delete()
+        except discord.HTTPException:
+            pass
+
+    @commands.hybrid_command(name="ciztest", with_app_command=False)
+    @commands.has_permissions(manage_guild=True)
+    @commands.guild_only()
+    async def ciztest(self, ctx):
+        """Resim çizme modellerini dene ve tam hatayı göster (yetkili)"""
+        await ctx.send(f"🔎 {len(RESIM_MODELLER)} model deneniyor, bu bir dakika sürebilir...")
+        satirlar = []
+        for model in RESIM_MODELLER:
+            t0 = time.perf_counter()
+            try:
+                bayt, kod, detay = await asyncio.wait_for(
+                    asyncio.to_thread(resim_model, model, "kırmızı bir elma"), 60)
+            except asyncio.TimeoutError:
+                bayt, kod, detay = None, "zaman", "60 saniyede cevap gelmedi"
+            sn = time.perf_counter() - t0
+            satirlar.append(f"✅ `{model}` çizdi ({sn:.1f} sn)" if bayt else f"❌ `{model}`: {kod} — {detay[:180]}")
+        await ctx.send("🎨 **Çizim testi**\n" + "\n".join(satirlar))
 
     # ================= ⏱️ Olaylar ve döngü =================
     @commands.Cog.listener()
@@ -610,6 +656,7 @@ async def kur(bot, g):
     cog.gorev = asyncio.create_task(cog.dongu())
     atexit.register(lambda: kaydet() if kirli else None)
     g["EK_KATEGORILER"].update(YARDIM)
+    print(f"v20 yüklendi: VIP + ciz komutları hazır (anahtar {'var' if GEMINI_KEY else 'YOK'}).")
 
     # Discord en fazla 100 slash komutuna izin verir; aşılırsa HİÇBİRİ kaydolmaz.
     # Sınır aşılırsa v20 komutlarının slash halini (td! halı kalır) önem sırasına göre çıkar.
