@@ -15,7 +15,10 @@ from discord.ext import commands
 
 SURUM = "2.0"
 DEGISIKLIKLER = (
-    "👑 **VIP**: `vipkur`, `vipver`, `vipal`, `viplistesi`, `vip`, `vipgunluk`\n"
+    "👑 **VIP**: 3 kademe (VIP, VIP+, VIP MAX), seri bonuslu `vipgunluk`, `viprol`, `vipkanal`, süre bitmeden DM uyarısı\n"
+    "🎨 **Çiz**: VIP'lere özel `ciz` (yapay zekayla resim çizer)\n"
+    "⚡ **Yapay zeka** çok daha hızlı; `ogret` ile ona hazır cevap ve bilgi öğretebilirsin\n"
+    "🔤 Komutlar artık Türkçe harfle de çalışıyor (`td!satınal`, `td!çiz`...)\n"
     "✉️ **DM**: `dm` artık yazdığın mesajı olduğu gibi iletir (gönderen adı yok)\n"
     "🧠 **Günün Sorusu** ve 💬 **Aktiflik**: panelsiz, normal yazı + @everyone\n"
     "💰 Ekonomi+, 🛡️ moderasyon+, 🎵 müzik v1.8'deki gibi çalışıyor"
@@ -31,6 +34,27 @@ bot = commands.Bot(
     help_command=None,
     case_insensitive=True,
 )
+
+# Türkçe karakterli yazılan komutlar da çalışsın: td!satınal -> satinal, td!çiz -> ciz, td!ŞİFRE -> sifre
+_TR_TABLO = str.maketrans("ıİşŞğĞüÜöÖçÇ", "iissgguuoocc")
+_orijinal_get_context = bot.get_context
+
+
+async def _get_context_turkce(message, *, cls=commands.Context):
+    icerik = message.content or ""
+    for p in PREFIXLER:
+        if icerik.startswith(p):
+            sonra = icerik[len(p):]
+            kelime = sonra.split(None, 1)[0] if sonra.strip() else ""
+            if kelime and bot.get_command(kelime) is None:
+                duz = kelime.translate(_TR_TABLO)
+                if duz != kelime and bot.get_command(duz) is not None:
+                    message.content = p + duz + sonra[len(kelime):]
+            break
+    return await _orijinal_get_context(message, cls=cls)
+
+
+bot.get_context = _get_context_turkce
 
 # API Anahtarın
 p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
@@ -365,6 +389,11 @@ async def setup_hook():
         await v20.kur(bot, globals())
     except Exception as e:
         print(f"v20.py yüklenemedi: {e!r}")
+    try:
+        import v20_ai                    # hızlı yapay zeka + eğitim (ogret)
+        await v20_ai.kur(bot, globals())
+    except Exception as e:
+        print(f"v20_ai.py yüklenemedi: {e!r}")
     try:
         senkron = await bot.tree.sync()
         print(f"{len(senkron)} slash komutu kaydedildi.")
