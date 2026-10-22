@@ -25,6 +25,9 @@ import atexit
 import asyncio
 import base64
 import datetime
+import random
+import threading
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -60,6 +63,19 @@ KADEMELER = {
     2: {"ad": "VIP+", "emoji": "💎", "gunluk": 1.5, "indirim": 0.30, "ciz": 20},
     3: {"ad": "VIP MAX", "emoji": "🔥", "gunluk": 2.0, "indirim": 0.40, "ciz": 40},
 }
+
+# Resim sağlayıcıları, sırayla denenir:
+#   "gemini"   : senin Google anahtarın (kota/yetki yoksa otomatik atlanır)
+#   "ucretsiz" : pollinations.ai, anahtar gerektirmez (anonim kullanımda ~15 saniyede 1 istek)
+# Sadece ücretsizi kullanmak istersen: RESIM_SAGLAYICI = ("ucretsiz",)
+RESIM_SAGLAYICI = ("gemini", "ucretsiz")
+GEMINI_KAPALI_SURE = 1800    # Gemini kota/yetki hatası verince kaç saniye hiç denenmesin
+UCRETSIZ_ARALIK = 16         # ücretsiz servise iki istek arası en az kaç saniye
+UCRETSIZ_URL = "https://image.pollinations.ai/prompt/"
+
+gemini_kapali_bitis = 0.0
+_ucretsiz_kilit = threading.Lock()
+_ucretsiz_son = 0.0
 
 GEMINI_KEY = None            # kur() içinde main.py'den alınır (API koduna dokunulmaz)
 
@@ -211,17 +227,63 @@ def resim_model(model, tarif):
         return None, type(e).__name__, repr(e)[:200]
 
 
+def resim_ucretsiz(tarif):
+    """pollinations.ai'den resim alır (ayrı thread'de çalışır). (bayt, hata_kodu, detay) döner."""
+    global _ucretsiz_son
+    with _ucretsiz_kilit:                      # servis anonim kullanımda sıkı sınırlı: istekleri sıraya diz
+        bekle = UCRETSIZ_ARALIK - (time.time() - _ucretsiz_son)
+        if bekle > 0:
+            time.sleep(min(bekle, UCRETSIZ_ARALIK))
+        try:
+            url = (UCRETSIZ_URL + urllib.parse.quote(tarif, safe="") +
+                   f"?width=1024&height=1024&nologo=true&safe=true&model=flux&seed={random.randint(1, 10**7)}")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; TheDlaxBot)"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                tur = r.headers.get("Content-Type", "")
+                bayt = r.read()
+            if not tur.startswith("image/") or len(bayt) < 1000:
+                return None, "ucretsiz_hata", f"resim gelmedi ({tur or 'bilinmiyor'})"
+            return bayt, "", ""
+        except urllib.error.HTTPError as e:
+            print(f"Ücretsiz resim hatası HTTP {e.code}")
+            return (None, "ucretsiz_yogun", f"HTTP {e.code}") if e.code in (429, 502, 503, 504) \
+                else (None, "ucretsiz_hata", f"HTTP {e.code}")
+        except Exception as e:
+            print(f"Ücretsiz resim hatası: {e!r}")
+            return None, "ucretsiz_hata", repr(e)[:200]
+        finally:
+            _ucretsiz_son = time.time()
+
+
 def resim_uret(tarif):
-    """Modelleri sırayla dener. (png_bayt, hata_kodu) döner."""
+    """Sağlayıcıları sırayla dener. (resim_bayt, hata_kodu) döner."""
+    global gemini_kapali_bitis
     son = "bilinmiyor"
-    for model in RESIM_MODELLER:
-        bayt, kod, _ = resim_model(model, tarif)
-        if bayt:
-            return bayt, ""
-        if kod in ("engel", "kota", "anahtar"):
-            return None, kod              # başka model denemenin faydası yok
-        son = kod
+    if "gemini" in RESIM_SAGLAYICI and GEMINI_KEY and time.time() >= gemini_kapali_bitis:
+        for model in RESIM_MODELLER:
+            bayt, kod, _ = resim_model(model, tarif)
+            if bayt:
+                return bayt, ""
+            if kod == "engel":
+                return None, "engel"           # güvenlik filtresine takıldı, başka yerde denemeyelim
+            if kod in ("kota", "yetki", "anahtar"):
+                gemini_kapali_bitis = time.time() + GEMINI_KAPALI_SURE   # bir süre Gemini'yi hiç deneme
+                son = kod
+                break
+            son = kod
+    if "ucretsiz" in RESIM_SAGLAYICI:
+        bayt, kod, _ = resim_ucretsiz(tarif)
+        return (bayt, "") if bayt else (None, kod)
     return None, son
+
+
+def uzanti(bayt):
+    """Resmin türüne göre dosya uzantısı."""
+    if bayt[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if bayt[:4] == b"RIFF":
+        return "webp"
+    return "png"
 
 
 CIZ_HATA = {
@@ -231,6 +293,8 @@ CIZ_HATA = {
     "yetki": "❌ Anahtarın resim üretmeye yetkisi yok gibi görünüyor (ücretli plan gerekebilir).",
     "bos": "❌ Yapay zeka bu sefer resim üretemedi, tarifi değiştirip tekrar dene.",
     "zaman": "⏳ Çizim çok uzun sürdü, bir daha dene.",
+    "ucretsiz_yogun": "⏳ Ücretsiz çizim servisi şu an yoğun, 15-30 saniye sonra tekrar dene.",
+    "ucretsiz_hata": "❌ Ücretsiz çizim servisine ulaşılamadı, biraz sonra tekrar dene.",
 }
 
 
@@ -561,7 +625,7 @@ class V20(commands.Cog):
         kalan_hak = limit - kayit["adet"]
         await ctx.send(
             f"🎨 **{tarif[:200]}**\n_Yapay zeka ile çizildi • bugün {kalan_hak} hakkın kaldı_",
-            file=discord.File(io.BytesIO(bayt), filename="resim.png"),
+            file=discord.File(io.BytesIO(bayt), filename=f"resim.{uzanti(bayt)}"),
             allowed_mentions=NO_PING)
         try:
             await durum.delete()
@@ -573,7 +637,7 @@ class V20(commands.Cog):
     @commands.guild_only()
     async def ciztest(self, ctx):
         """Resim çizme modellerini dene ve tam hatayı göster (yetkili)"""
-        await ctx.send(f"🔎 {len(RESIM_MODELLER)} model deneniyor, bu bir dakika sürebilir...")
+        await ctx.send(f"🔎 {len(RESIM_MODELLER)} Gemini modeli ve ücretsiz servis deneniyor, 1-2 dakika sürebilir...")
         satirlar = []
         for model in RESIM_MODELLER:
             t0 = time.perf_counter()
@@ -584,6 +648,16 @@ class V20(commands.Cog):
                 bayt, kod, detay = None, "zaman", "60 saniyede cevap gelmedi"
             sn = time.perf_counter() - t0
             satirlar.append(f"✅ `{model}` çizdi ({sn:.1f} sn)" if bayt else f"❌ `{model}`: {kod} — {detay[:180]}")
+        t0 = time.perf_counter()
+        try:
+            bayt, kod, detay = await asyncio.wait_for(asyncio.to_thread(resim_ucretsiz, "kırmızı bir elma"), 90)
+        except asyncio.TimeoutError:
+            bayt, kod, detay = None, "zaman", "90 saniyede cevap gelmedi"
+        sn = time.perf_counter() - t0
+        satirlar.append(f"✅ ücretsiz servis çizdi ({sn:.1f} sn)" if bayt else f"❌ ücretsiz servis: {kod} — {detay[:150]}")
+        kapali = max(0, int(gemini_kapali_bitis - time.time()))
+        if kapali:
+            satirlar.append(f"ℹ️ Gemini kota hatası yüzünden {kapali // 60} dk daha atlanacak.")
         await ctx.send("🎨 **Çizim testi**\n" + "\n".join(satirlar))
 
     # ================= ⏱️ Olaylar ve döngü =================
