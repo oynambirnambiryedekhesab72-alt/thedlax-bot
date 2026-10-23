@@ -1,750 +1,711 @@
 # -*- coding: utf-8 -*-
 """
-THEDLAX BOT v2.0 - VIP modülü
+THEDLAX BOT v2.0 - Hızlı yapay zeka ve eğitim modülü
 
-main.py bunu v18.py'den sonra otomatik yükler. Bu dosya yoksa bot yine açılır.
-Komutlar (td!komut ile çalışır; Discord 100 slash sınırı dolu olduğu için slash yok):
-  👑 VIP   : vipkur, vipver, vipal, viplistesi, vip, vipgunluk  (3 kademe: VIP, VIP+, VIP MAX)
-  ✨ VIP+  : viprol (kişisel renkli rol), vipkanal [ses] (VIP'lere özel yazı/ses kanalı)
-  🎨 Çizim : ciz (yapay zekayla resim çizer, sadece VIP)
+main.py bunu v20.py'den sonra otomatik yükler. Bu dosya yoksa bot eski yavaş yöntemle çalışmaya devam eder.
+main.py'deki API anahtarına ve istek koduna dokunmaz; sadece `ai_cevapla` fonksiyonunun yerine geçer.
 
-VIP avantajları:
-  - VIP rolü (süreli ya da kalıcı, süre dolunca rol otomatik alınır, bitmeden 1 gün önce DM uyarısı)
-  - vipgunluk: günlük bonus + her gün üst üste alırsan seri bonusu
-  - Rol marketinde indirim
-  - Kişisel rol (kendi adın + istediğin renk) ve VIP'lere özel sohbet kanalı
-  - ciz: yapay zekayla resim çizme (Gemini)
-  - Yapay zekada (td!ai) bekleme süresi kısa, otomatik selamlaşmada adının yanına kademe simgesi eklenir
-  - VIP'lere özel yazı ve ses kanalı (vipkanal / vipkanal ses)
-  - VIP olunca hoş geldin DM'i
-Veriler veri_v20.json dosyasında tutulur.
+Neden hızlı?
+  1) Bağlantı her soruda yeniden kurulmuyor (kalıcı aiohttp oturumu).
+  2) Modelin "uzun düşünmesi" kapatılıyor (thinking: minimal), kısa sohbet için bu çok süre kazandırır.
+  3) İlk model 5 saniyede cevap vermezse yedek model aynı anda başlıyor (sırayla beklemek yok).
+  4) Aynı soru tekrar sorulursa cevap önbellekten geliyor.
+  5) Senin öğrettiğin soru-cevaplar yapay zekaya gitmeden ANINDA cevaplanıyor.
+
+Yetenekler:
+  - 👁️ Görsel okur: `td!ai bu ne?` yazıp resim ekle (ya da bir resme cevap verip `td!ai` yaz). Yazıları da okur.
+  - 🔎 Bilmediği ya da güncel şeyleri Google aramasıyla webde arar ve kaynak gösterir.
+  - ✍️ Normalde kısa konuşur ama istersen (hikaye, ödev, açıklama...) 50 cümleyi aşan uzun cevap da yazar.
+  - 💬 Komutsuz sohbet: biri "sa" yazarsa "as", "selam" yazarsa "selam sana" der. İstediğin kanallarda
+    soruları (sonunda ? olan ya da "nasıl, neden, kim..." ile başlayan) kendiliğinden cevaplar. Ayar: td!sohbet
+
+Eğitim (Sunucuyu Yönet yetkisi gerekir):
+  td!ogret merhaba | Selam {isim}, hoş geldin!   -> hazır cevap (anında, API kullanmaz)
+  td!ogret Sunucu kuralı: küfür yasak             -> bilgi (yapay zeka cevap verirken bunu bilir)
+  td!ogretilenler  •  td!aisil S3 / B2  •  td!aitest (hız testi)
+Veriler veri_ai.json dosyasında tutulur.
 """
-import io
 import os
+import re
 import json
 import time
-import atexit
-import asyncio
-import base64
-import datetime
 import random
-import threading
-import urllib.parse
-import urllib.request
-import urllib.error
+import base64
+import asyncio
+import difflib
 
+import aiohttp
 import discord
-from discord import app_commands
 from discord.ext import commands
-from v15 import eko_ekle, para, xp_ekle, riskli_rol, NO_PING
+from v15 import NO_PING
 
-DOSYA = "veri_v20.json"
-TR = datetime.timezone(datetime.timedelta(hours=3))
+DOSYA = "veri_ai.json"
 
 # ----------------------------------------------------------------------
 # Ayarlar
 # ----------------------------------------------------------------------
-VIP_ROL_ADI = "👑 VIP"       # vipkur rol vermezsen bu adla rol açar
-VIP_GUNLUK_PARA = 500        # vipgunluk: verilen para
-VIP_GUNLUK_XP = 100          # vipgunluk: verilen XP
-VIP_GUNLUK_SURE = 86400      # vipgunluk bekleme süresi (saniye)
-VIP_SERI_BONUS = 0.10        # her seri günü için +%10 (en fazla VIP_SERI_MAX gün sayılır)
-VIP_SERI_MAX = 10
-VIP_MAX_GUN = 3650           # vipver için en fazla gün
-VIP_UYARI_SURE = 86400       # bitmeye kaç saniye kala DM ile haber verilsin
+AI_ISTEK_SURE = 60        # tek bir istek en fazla kaç saniye beklesin (uzun cevap/web araması için)
+AI_YEDEK_BEKLEME = 12     # ilk model bu kadar sürede cevap vermezse yedek model de başlar
+AI_MAX_TOKEN = 4000       # cevap uzunluk sınırı (50 cümle rahat sığar; kısa sorulara yine kısa cevap verir)
+AI_ARAMA = True           # bilmediğinde Google aramasını kullansın mı
+GORSEL_MAX = 3            # bir soruda en fazla kaç görsel
+GORSEL_MAX_MB = 4         # görsel başına en fazla MB
+GORSEL_TURLER = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+KAYNAK_ONEK = "\n\n🔎 Webde aradım: "
+AI_ONBELLEK_SURE = 600    # aynı soru kaç saniye önbellekte kalsın
+AI_ONBELLEK_MAX = 300
+ESLESME = 0.82            # öğretilen soruya ne kadar benzerse anında cevap verilsin (0-1)
+MAX_SORU = 200            # sunucu başına en fazla soru-cevap
+MAX_BILGI = 40            # sunucu başına en fazla bilgi
 
-CIZ_BEKLEME = 30             # ciz: kişi başı bekleme (saniye)
-CIZ_MAX_HARF = 500           # tarif en fazla kaç karakter
-CIZ_ZAMAN_ASIMI = 75         # çizim en fazla kaç saniye beklensin (sonra hata mesajı verilir)
-# Sırayla denenir; model bulunamazsa (404) bir sonrakine geçer.
-RESIM_MODELLER = ["gemini-3.1-flash-image", "gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]
+veri = {"sunucu": {}, "sohbet": {}}
 
-# VIP kademeleri: gunluk = günlük bonus çarpanı, indirim = rol marketi indirimi, ciz = günlük resim hakkı
-KADEMELER = {
-    1: {"ad": "VIP", "emoji": "👑", "gunluk": 1.0, "indirim": 0.20, "ciz": 10},
-    2: {"ad": "VIP+", "emoji": "💎", "gunluk": 1.5, "indirim": 0.30, "ciz": 20},
-    3: {"ad": "VIP MAX", "emoji": "🔥", "gunluk": 2.0, "indirim": 0.40, "ciz": 40},
-}
-
-# Resim sağlayıcıları, sırayla denenir:
-#   "gemini"   : senin Google anahtarın (kota/yetki yoksa otomatik atlanır)
-#   "ucretsiz" : pollinations.ai, anahtar gerektirmez (anonim kullanımda ~15 saniyede 1 istek)
-# Sadece ücretsizi kullanmak istersen: RESIM_SAGLAYICI = ("ucretsiz",)
-RESIM_SAGLAYICI = ("gemini", "ucretsiz")
-GEMINI_KAPALI_SURE = 1800    # Gemini kota/yetki hatası verince kaç saniye hiç denenmesin
-UCRETSIZ_ARALIK = 16         # ücretsiz servise iki istek arası en az kaç saniye
-UCRETSIZ_URL = "https://image.pollinations.ai/prompt/"
-
-gemini_kapali_bitis = 0.0
-_ucretsiz_kilit = threading.Lock()
-_ucretsiz_son = 0.0
-
-GEMINI_KEY = None            # kur() içinde main.py'den alınır (API koduna dokunulmaz)
-
-RENKLER = {
-    "kirmizi": 0xE74C3C, "kırmızı": 0xE74C3C, "mavi": 0x3498DB, "yesil": 0x2ECC71, "yeşil": 0x2ECC71,
-    "sari": 0xF1C40F, "sarı": 0xF1C40F, "mor": 0x9B59B6, "turuncu": 0xE67E22, "pembe": 0xFF69B4,
-    "siyah": 0x23272A, "beyaz": 0xFFFFFF, "altin": 0xFFD700, "altın": 0xFFD700, "turkuaz": 0x1ABC9C,
-    "gri": 0x95A5A6, "lacivert": 0x1F3A93, "bordo": 0x800020,
-}
-
-# ----------------------------------------------------------------------
-# Veri
-# ----------------------------------------------------------------------
-veri = {"sunucu": {}, "vip": {}, "gunluk": {}, "kisisel": {}, "ciz": {}, "uyari": {}, "kademe": {}}
-kirli = False
+_TR = str.maketrans("ıİşŞğĞüÜöÖçÇ", "iissgguuoocc")
 
 
-def isaretle20():
-    global kirli
-    kirli = True
+def norm(t):
+    """Küçük harf, Türkçe karakter ve noktalama farkı olmadan karşılaştırma için."""
+    t = t.translate(_TR).lower()
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    return " ".join(t.split())
 
 
 def yukle():
     try:
         with open(DOSYA, "r", encoding="utf-8") as f:
             v = json.load(f)
+        for anahtar in veri:
+            if isinstance(v.get(anahtar), dict):
+                veri[anahtar] = v[anahtar]
     except FileNotFoundError:
-        return
+        pass
     except Exception as e:
-        print(f"v20 verisi okunamadı: {e!r}")
-        return
-    for k in veri:
-        if isinstance(v.get(k), dict):
-            veri[k] = v[k]
+        print(f"v20_ai verisi okunamadı: {e!r}")
 
 
 def kaydet():
-    global kirli
     gecici = DOSYA + ".tmp"
     try:
         with open(gecici, "w", encoding="utf-8") as f:
             json.dump(veri, f, ensure_ascii=False)
         os.replace(gecici, DOSYA)
-        kirli = False
     except Exception as e:
-        print(f"v20 verisi kaydedilemedi: {e!r}")
+        print(f"v20_ai verisi kaydedilemedi: {e!r}")
 
 
-def vip_kayit(gid):
-    """{kullanıcı_id: bitiş_zamanı}  (0 = kalıcı)"""
-    return veri["vip"].setdefault(str(gid), {})
+def sunucu(gid):
+    return veri["sunucu"].setdefault(str(gid), {"sorular": [], "bilgiler": [], "sayac": 0})
 
 
-def vip_mi(gid, uid):
-    bitis = veri["vip"].get(str(gid), {}).get(str(uid))
-    return bitis is not None and (bitis == 0 or bitis > time.time())
+def ogretilen_cevap(gid, soru):
+    """Öğretilmiş bir soruya yeterince benziyorsa cevabı döner, yoksa None."""
+    n = norm(soru)
+    if not n:
+        return None
+    en_iyi, en_oran = None, 0.0
+    for k in sunucu(gid)["sorular"]:
+        kn = k.get("n") or norm(k["s"])
+        oran = 1.0 if kn == n else difflib.SequenceMatcher(None, n, kn).ratio()
+        if oran > en_oran:
+            en_iyi, en_oran = k, oran
+    return en_iyi["c"] if en_iyi is not None and en_oran >= ESLESME else None
 
 
-def kademe_al(gid, uid):
-    """Kişinin VIP kademesi (1-3). Kademe kaydı yoksa 1."""
-    k = veri["kademe"].get(str(gid), {}).get(str(uid), 1)
-    return k if k in KADEMELER else 1
+def baglam(gid, soru):
+    """Yapay zekanın sistem mesajına eklenecek öğretilmiş bilgiler."""
+    d = sunucu(gid)
+    metin = ""
+    if d["bilgiler"]:
+        metin += "\nSana öğretilen bilgiler (ilgili olduğunda bunlara göre cevap ver):\n"
+        metin += "\n".join(f"- {b['t']}" for b in d["bilgiler"][-MAX_BILGI:])
+    kelimeler = {w for w in norm(soru).split() if len(w) > 2}
+    if kelimeler and d["sorular"]:
+        ilgili = []
+        for k in d["sorular"]:
+            ortak = len(kelimeler & set((k.get("n") or norm(k["s"])).split()))
+            if ortak:
+                ilgili.append((ortak, k))
+        ilgili.sort(key=lambda x: -x[0])
+        if ilgili:
+            metin += "\nÖğretilmiş örnek cevaplar (tarzını ve içeriğini kullan):\n"
+            metin += "\n".join(f"Soru: {k['s']} -> Cevap: {k['c']}" for _, k in ilgili[:5])
+    return metin
 
 
-def kademe_ad(k):
-    b = KADEMELER[k]
-    return f"{b['emoji']} {b['ad']}"
+def sikistir(n):
+    """'saaa' -> 'sa', 'selaaam' -> 'selam', 'heyyy' -> 'hey' (tekrarlanan harfleri azalt)."""
+    n = re.sub(r"([aeiou])\1+", r"\1", n)
+    return re.sub(r"([^aeiou\s])\1+", r"\1", n)
 
 
-def vip_indirim(gid, uid, fiyat):
-    """VIP ise fiyata kademesine göre indirim uygular (v18 satinal kullanır)."""
-    if vip_mi(gid, uid):
-        oran = KADEMELER[kademe_al(gid, uid)]["indirim"]
-        if oran:
-            return max(1, int(fiyat * (1 - oran)))
-    return fiyat
+# Anahtarlar norm() biçiminde yazılır (küçük harf, Türkçe karakter yok). Biri bunlardan BİRİNİ TEK BAŞINA yazarsa cevap verilir.
+SELAM_GRUPLARI = [
+    ({"sa", "s a", "sea", "selamun aleykum", "selamunaleykum", "selamin aleykum"},
+     ["as", "Aleyküm selam {isim}!", "Aleyküm selam, hoş geldin 👋", "as {isim}"]),
+    ({"selam", "slm", "selamlar", "selam herkese", "selam millet", "selam arkadaslar"},
+     ["Selam sana {isim}! 👋", "Selam sana!", "Selam {isim}, hoş geldin!"]),
+    ({"merhaba", "mrb", "meraba", "merhabalar", "mrhaba", "hey", "hi", "hello"},
+     ["Merhaba {isim}! 👋", "Merhaba, hoş geldin!", "Selam sana {isim}!"]),
+    ({"naber", "nbr", "ne haber", "nasilsin", "nasilsiniz", "nasil gidiyor", "ne var ne yok"},
+     ["İyidir, sen nasılsın {isim}?", "İyiyim sağ ol, sen nasılsın?", "Güzel gidiyor, sende ne var ne yok?"]),
+    ({"gunaydin", "gunaydinlar"},
+     ["Günaydın {isim}! ☀️", "Günaydın, günün güzel geçsin!"]),
+    ({"iyi geceler", "iyi geceler herkese", "hayirli geceler", "tatli ruyalar"},
+     ["İyi geceler {isim}, tatlı rüyalar 🌙", "İyi geceler! 🌙"]),
+    ({"iyi aksamlar", "hayirli aksamlar"}, ["İyi akşamlar {isim}! 🌆"]),
+    ({"iyi gunler", "hayirli gunler"}, ["İyi günler {isim}! 🌞"]),
+    ({"gorusuruz", "gorusuruz herkese", "hoscakal", "hoscakalin", "gule gule", "bb", "bye", "kib"},
+     ["Görüşürüz {isim}! 👋", "Hoşça kal {isim}!", "Kendine iyi bak! 👋"]),
+    ({"geldim", "ben geldim"}, ["Hoş geldin {isim}! 🎉"]),
+]
+SELAM_HARITA = {sikistir(k): cevaplar for kume, cevaplar in SELAM_GRUPLARI for k in kume}
+
+SORU_KELIMELERI = {"ne", "nedir", "neden", "niye", "nicin", "nasil", "kim", "kime", "kimin", "kimi", "kac", "kacta",
+                   "nerede", "nereye", "nereden", "hangi", "hangisi", "ne zaman", "neresi", "kimdir"}
+SELAM_KULLANICI_BEKLEME = 30   # aynı kişiye otomatik selam cevabı arası (saniye)
+SELAM_KANAL_BEKLEME = 3        # aynı kanalda iki otomatik cevap arası
+SORU_KANAL_BEKLEME = 8         # soru cevaplama kanalında iki cevap arası
 
 
-def bitis_yaz(bitis):
-    return "♾️ kalıcı" if not bitis else f"<t:{int(bitis)}:R>"
+def soru_mu(icerik, n):
+    """Mesaj bir soruya benziyor mu? (sonu ?, soru kelimesiyle başlıyor ya da mi/mı ile bitiyor)"""
+    if icerik.rstrip().endswith("?"):
+        return True
+    kelimeler = n.split()
+    if not kelimeler:
+        return False
+    if kelimeler[0] in SORU_KELIMELERI:
+        return True
+    return len(kelimeler) >= 2 and kelimeler[-1] in ("mi", "mu")
 
 
-def renk_coz(metin):
-    """'#ff8800', 'ff8800' ya da 'kırmızı' -> sayı. Olmazsa None."""
-    m = metin.strip().lower()
-    if m in RENKLER:
-        return RENKLER[m]
-    m = m.lstrip("#")
-    if len(m) == 6:
-        try:
-            return int(m, 16)
-        except ValueError:
-            return None
+def ogretilen_tam(gid, n):
+    """Öğretilmiş sorulardan birine birebir (norm sonrası) eşitse cevabı döner."""
+    for k in sunucu(gid)["sorular"]:
+        if (k.get("n") or norm(k["s"])) == n:
+            return k["c"]
     return None
 
 
-# ----------------------------------------------------------------------
-# 🎨 Yapay zekayla resim çizme (Gemini)
-# ----------------------------------------------------------------------
-def resim_cikar(sonuc):
-    """Gemini cevabından resmi çıkarır. (bayt, neden) döner; neden: '', 'engel', 'bos'."""
-    if (sonuc.get("promptFeedback") or {}).get("blockReason"):
-        return None, "engel"
-    adaylar = sonuc.get("candidates") or []
-    if not adaylar:
-        return None, "bos"
-    for parca in (adaylar[0].get("content") or {}).get("parts") or []:
-        inline = parca.get("inlineData") or parca.get("inline_data")
-        if inline and inline.get("data"):
-            return base64.b64decode(inline["data"]), ""
-    if str(adaylar[0].get("finishReason", "")).upper() in ("SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT"):
-        return None, "engel"
-    return None, "bos"
-
-
-def resim_model(model, tarif):
-    """Tek bir modele sorar (ayrı thread'de çalışır). (png_bayt, hata_kodu, detay) döner."""
-    if not GEMINI_KEY:
-        return None, "anahtar", "API anahtarı bulunamadı"
+def vip_bilgi(gid, uid):
+    """(VIP mi, kademe simgesi). v20.py yoksa ya da DM ise (False, '')."""
+    if not gid:
+        return False, ""
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        payload = {
-            "contents": [{"parts": [{"text": tarif}]}],
-            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": GEMINI_KEY},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=40) as r:
-            sonuc = json.loads(r.read().decode("utf-8"))
-        bayt, neden = resim_cikar(sonuc)
-        if bayt:
-            return bayt, "", ""
-        return None, neden, "model resim döndürmedi" if neden == "bos" else "güvenlik filtresi"
-    except urllib.error.HTTPError as e:
-        govde = e.read().decode("utf-8", errors="ignore")
-        try:
-            detay = json.loads(govde).get("error", {}).get("message", govde)
-        except Exception:
-            detay = govde
-        print(f"Resim hatası ({model}) HTTP {e.code}: {detay[:300]}")
-        kod = "kota" if e.code == 429 else ("yetki" if e.code in (400, 403) else f"HTTP {e.code}")
-        return None, kod, f"HTTP {e.code}: {detay[:200]}"
-    except Exception as e:
-        print(f"Resim hatası ({model}): {e!r}")
-        return None, type(e).__name__, repr(e)[:200]
+        import v20
+        if v20.vip_mi(gid, uid):
+            return True, v20.KADEMELER[v20.kademe_al(gid, uid)]["emoji"]
+    except Exception:
+        pass
+    return False, ""
 
 
-def resim_ucretsiz(tarif):
-    """pollinations.ai'den resim alır (ayrı thread'de çalışır). (bayt, hata_kodu, detay) döner."""
-    global _ucretsiz_son
-    with _ucretsiz_kilit:                      # servis anonim kullanımda sıkı sınırlı: istekleri sıraya diz
-        bekle = UCRETSIZ_ARALIK - (time.time() - _ucretsiz_son)
-        if bekle > 0:
-            time.sleep(min(bekle, UCRETSIZ_ARALIK))
-        try:
-            url = (UCRETSIZ_URL + urllib.parse.quote(tarif, safe="") +
-                   f"?width=1024&height=1024&nologo=true&safe=true&model=flux&seed={random.randint(1, 10**7)}")
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; TheDlaxBot)"})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                tur = r.headers.get("Content-Type", "")
-                bayt = r.read()
-            if not tur.startswith("image/") or len(bayt) < 1000:
-                return None, "ucretsiz_hata", f"resim gelmedi ({tur or 'bilinmiyor'})"
-            return bayt, "", ""
-        except urllib.error.HTTPError as e:
-            print(f"Ücretsiz resim hatası HTTP {e.code}")
-            return (None, "ucretsiz_yogun", f"HTTP {e.code}") if e.code in (429, 502, 503, 504) \
-                else (None, "ucretsiz_hata", f"HTTP {e.code}")
-        except Exception as e:
-            print(f"Ücretsiz resim hatası: {e!r}")
-            return None, "ucretsiz_hata", repr(e)[:200]
-        finally:
-            _ucretsiz_son = time.time()
+STIL = (
+    "Her zaman Türkçe konuş. Samimi, günlük dille konuş, robot gibi resmi olma. "
+    "Normalde KISA cevap ver (1-3 cümle). Ama kullanıcı ayrıntı, açıklama, hikaye, makale, ödev, "
+    "karşılaştırma ya da uzun bir şey isterse, ya da konu gerçekten uzun anlatım gerektiriyorsa "
+    "istediğin kadar uzun (gerekirse 50 cümle) ve düzenli yaz; bu durumda kısa konuşma kuralı geçerli değil. "
+    "Bilmediğin ya da güncel olabilecek (haber, skor, fiyat, tarih, yeni çıkan şey, kişi ve yer bilgisi) "
+    "konularda emin değilsen web aramasını kullan, asla bilgi uydurma. "
+    "Kullanıcı görsel gönderirse görseli dikkatle incele; yazı varsa oku, sorusuna göre anlat."
+)
 
 
-def resim_uret(tarif):
-    """Sağlayıcıları sırayla dener. (resim_bayt, hata_kodu) döner."""
-    global gemini_kapali_bitis
-    son = "bilinmiyor"
-    if "gemini" in RESIM_SAGLAYICI and GEMINI_KEY and time.time() >= gemini_kapali_bitis:
-        for model in RESIM_MODELLER:
-            bayt, kod, _ = resim_model(model, tarif)
-            if bayt:
-                return bayt, ""
-            if kod == "engel":
-                return None, "engel"           # güvenlik filtresine takıldı, başka yerde denemeyelim
-            if kod in ("kota", "yetki", "anahtar"):
-                gemini_kapali_bitis = time.time() + GEMINI_KAPALI_SURE   # bir süre Gemini'yi hiç deneme
-                son = kod
-                break
-            son = kod
-    if "ucretsiz" in RESIM_SAGLAYICI:
-        bayt, kod, _ = resim_ucretsiz(tarif)
-        return (bayt, "") if bayt else (None, kod)
-    return None, son
+def sistem_metni(g):
+    """main.py'deki kimlik bilgilerini koru, kısalık kuralını bu modülün kurallarıyla değiştir."""
+    ana = g["SISTEM"]
+    k = ana.find("Her zaman Türkçe konuş.")
+    return (ana[:k] if k != -1 else ana) + STIL
 
 
-def uzanti(bayt):
-    """Resmin türüne göre dosya uzantısı."""
-    if bayt[:3] == b"\xff\xd8\xff":
-        return "jpg"
-    if bayt[:4] == b"RIFF":
-        return "webp"
-    return "png"
+def parcala(metin, sinir=1900, en_fazla=8):
+    """Uzun cevabı Discord sınırına göre cümle/satır sonlarından böler."""
+    parcalar = []
+    while len(metin) > sinir and len(parcalar) < en_fazla - 1:
+        kes = metin.rfind("\n", 0, sinir)
+        if kes < sinir // 2:
+            kes = metin.rfind(". ", 0, sinir) + 1
+            if kes < sinir // 2:
+                kes = metin.rfind(" ", 0, sinir)
+                if kes < sinir // 2:
+                    kes = sinir
+        parcalar.append(metin[:kes].rstrip())
+        metin = metin[kes:].lstrip()
+    if metin.strip():
+        parcalar.append(metin)
+    return parcalar
 
 
-CIZ_HATA = {
-    "anahtar": "❌ Yapay zeka anahtarı bulunamadı.",
-    "engel": "🚫 Bu isteği çizemem (güvenlik filtresine takıldı). Başka bir şey dene.",
-    "kota": "⏳ Yapay zeka şu an çok yoğun ya da günlük kotası doldu. Biraz sonra tekrar dene.",
-    "yetki": "❌ Anahtarın resim üretmeye yetkisi yok gibi görünüyor (ücretli plan gerekebilir).",
-    "bos": "❌ Yapay zeka bu sefer resim üretemedi, tarifi değiştirip tekrar dene.",
-    "zaman": "⏳ Çizim çok uzun sürdü, bir daha dene.",
-    "ucretsiz_yogun": "⏳ Ücretsiz çizim servisi şu an yoğun, 15-30 saniye sonra tekrar dene.",
-    "ucretsiz_hata": "❌ Ücretsiz çizim servisine ulaşılamadı, biraz sonra tekrar dene.",
-}
-
-
-# ----------------------------------------------------------------------
-# Yardım satırları (/help menüsüne eklenir)
-# ----------------------------------------------------------------------
 YARDIM = {
-    "👑 VIP (v2.0)": [
-        "`vipkur [@rol]` VIP rolünü ayarla (boşsa 👑 VIP rolü açılır) (Sunucuyu Yönet)",
-        "`vipver @kişi [gün] [kademe 1-3]` VIP ver: 1=VIP, 2=VIP+, 3=VIP MAX (gün yazmazsan kalıcı) (Rolleri Yönet)",
-        "`vipal @kişi` VIP'liği al  •  `viplistesi` VIP'leri listele",
-        "`vipkanal [ses]` VIP'lere özel yazı (ya da ses) kanalı aç (Kanalları Yönet)",
-        "`vip [@kişi]` VIP durumu ve avantajlar",
-        f"`vipgunluk` günlük VIP bonusu (+{VIP_GUNLUK_PARA} 🪙 +{VIP_GUNLUK_XP} XP, seri bonuslu)",
-        "`viprol <renk> [isim]` kendi renkli rolünü yap (VIP)",
-        "`ciz <tarif>` yapay zekayla resim çiz (VIP)  •  `ciztest` çizim hatasını göster (Sunucuyu Yönet)",
+    "🧠 Yapay Zeka Eğitimi (v2.0)": [
+        "`ai <soru>` sohbet: görsel okur (resim ekle ya da resme cevap ver), bilmediğini webde arar, istersen uzun yazar",
+        "`sohbet [ac|kapat|kanal]` komutsuz sohbet: sa → as, selam → selam sana; `kanal` ile o kanalda sorulara da cevap verir (Sunucuyu Yönet)",
+        "`ogret <soru> | <cevap>` hazır cevap öğret, anında cevaplanır. `{isim}` yazarsan kişinin adı gelir (Sunucuyu Yönet)",
+        "`ogret <bilgi>` bilgi öğret (`|` koymazsan), yapay zeka cevap verirken bunu bilir (Sunucuyu Yönet)",
+        "`ogretilenler [sayfa]` öğretilenleri listele  •  `aisil S3` ya da `aisil B2` sil",
+        "`aitest` yapay zeka hız testi (Sunucuyu Yönet)",
     ],
 }
 
 
-class V20(commands.Cog):
+class HizliAI(commands.Cog):
     def __init__(self, bot, g):
         self.bot = bot
         self.g = g
-        self.gorev = None
-        self.ciz_son = {}
+        self.session = None
+        self.kapali = {}              # {("dusunme"/"arama", model): bu zamana kadar kapalı}
+        self.onbellek = {}
+        self.selam_kullanici = {}
+        self.selam_kanal = {}
+        self.soru_kanal = {}
 
-    def cog_unload(self):
-        if self.gorev is not None:
-            self.gorev.cancel()
+    async def cog_unload(self):
+        if self.session is not None and not self.session.closed:
+            await self.session.close()
+
+    def oturum(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=AI_ISTEK_SURE),
+                connector=aiohttp.TCPConnector(keepalive_timeout=300),
+            )
+        return self.session
+
+    # ================= Gemini isteği =================
+    def aktif_mi(self, ozellik, model):
+        return self.kapali.get((ozellik, model), 0) <= time.time()
 
     @staticmethod
-    def vip_rol(guild):
-        rid = veri["sunucu"].get(str(guild.id), {}).get("rol")
-        return guild.get_role(rid) if rid else None
+    def cevap_cikar(govde):
+        """Gemini cevabından metni ve (varsa) web kaynaklarını çıkarır."""
+        sonuc = json.loads(govde)
+        adaylar = sonuc.get("candidates") or []
+        if not adaylar:
+            return ""
+        parcalar = (adaylar[0].get("content", {}).get("parts") or [])
+        metin = "".join(p.get("text", "") for p in parcalar).strip()
+        if not metin:
+            return ""
+        gm = adaylar[0].get("groundingMetadata") or {}
+        kaynaklar, goruldu = [], set()
+        for c in gm.get("groundingChunks") or []:
+            w = c.get("web") or {}
+            baslik = (w.get("title") or "kaynak").replace("[", "").replace("]", "")[:40]
+            if w.get("uri") and baslik not in goruldu:
+                goruldu.add(baslik)
+                kaynaklar.append(f"[{baslik}](<{w['uri']}>)")
+        if gm.get("webSearchQueries") and kaynaklar:
+            metin += KAYNAK_ONEK + ", ".join(kaynaklar[:3])
+        return metin
 
-    @staticmethod
-    async def kisisel_sil(guild, uid):
-        rid = veri["kisisel"].get(str(guild.id), {}).pop(str(uid), None)
-        if rid is None:
-            return
-        isaretle20()
-        rol = guild.get_role(rid)
-        if rol is not None:
-            try:
-                await rol.delete(reason="VIP bitti, kişisel rol silindi")
-            except discord.HTTPException:
-                pass
-
-    # ================= 👑 Komutlar =================
-    @commands.hybrid_command(with_app_command=False, name="vipkur", usage="[@rol]")
-    @commands.has_permissions(manage_guild=True)
-    @commands.bot_has_permissions(manage_roles=True)
-    @commands.guild_only()
-    async def vipkur(self, ctx, rol: discord.Role = None):
-        """VIP rolünü ayarla (rol yazmazsan 👑 VIP rolü açılır)"""
-        await ctx.defer()
-        if rol is None:
-            try:
-                rol = await ctx.guild.create_role(
-                    name=VIP_ROL_ADI, colour=discord.Colour.gold(), hoist=True,
-                    reason=f"{ctx.author} VIP rolü kurdu")
-            except discord.HTTPException:
-                return await ctx.send("❌ Rol oluşturulamadı. Botun **Rolleri Yönet** yetkisi var mı?")
-        else:
-            if rol.managed or rol.is_default() or rol >= ctx.guild.me.top_role:
-                return await ctx.send("❌ Bu rolü veremem (rolüm onun altında kalıyor ya da özel bir rol).")
-            if riskli_rol(rol):
-                return await ctx.send("❌ Yetkili bir rol VIP rolü olamaz.")
-            if ctx.author.id != ctx.guild.owner_id and rol >= ctx.author.top_role:
-                return await ctx.send("❌ Bu rol senin rolünle aynı ya da senden yüksek.")
-        veri["sunucu"].setdefault(str(ctx.guild.id), {})["rol"] = rol.id
-        isaretle20()
-        await ctx.send(
-            f"✅ VIP rolü {rol.mention} olarak ayarlandı.\n"
-            f"VIP vermek için: `td!vipver @kişi [gün]`", allowed_mentions=NO_PING)
-
-    @commands.hybrid_command(with_app_command=False, name="vipver", aliases=["vipekle"], usage="@kişi [gün] [kademe 1-3]")
-    @commands.has_permissions(manage_roles=True)
-    @commands.bot_has_permissions(manage_roles=True)
-    @commands.guild_only()
-    async def vipver(self, ctx, uye: discord.Member, gun: int = 0, kademe: int = 1):
-        """Birine VIP ver: gün (0=kalıcı) ve kademe (1=VIP, 2=VIP+, 3=VIP MAX)"""
-        if uye.bot:
-            return await ctx.send("🤖 Botlara VIP verilmez.")
-        rol = self.vip_rol(ctx.guild)
-        if rol is None:
-            return await ctx.send("❌ VIP rolü ayarlı değil. Önce `td!vipkur` yaz.")
-        if not 0 <= gun <= VIP_MAX_GUN:
-            return await ctx.send(f"❌ Gün 0 (kalıcı) ile {VIP_MAX_GUN} arasında olmalı.")
-        if kademe not in KADEMELER:
-            return await ctx.send("❌ Kademe 1 (VIP), 2 (VIP+) ya da 3 (VIP MAX) olmalı.")
-        if rol >= ctx.guild.me.top_role:
-            return await ctx.send("❌ VIP rolü benim rolümden yüksek, veremiyorum.")
-        kayit = vip_kayit(ctx.guild.id)
-        uid = str(uye.id)
+    def ogren(self, model, basarisiz, t, s):
+        """Hata veren ayarı bir süre kapat, bir sonraki soruda boşuna deneme."""
         simdi = time.time()
-        onceki = kayit.get(uid)
-        if onceki == 0 and gun > 0:
-            return await ctx.send(f"ℹ️ **{uye.display_name}** zaten kalıcı VIP.", allowed_mentions=NO_PING)
-        if gun == 0:
-            bitis = 0
-        else:
-            temel = onceki if (onceki and onceki > simdi) else simdi   # süreli VIP'e gün eklenir
-            bitis = temel + gun * 86400
-        try:
-            if rol not in uye.roles:
-                await uye.add_roles(rol, reason=f"{ctx.author} VIP verdi")
-        except discord.HTTPException:
-            return await ctx.send("❌ Rol verilemedi (rol sırası ya da yetki sorunu).")
-        kayit[uid] = bitis
-        veri["kademe"].setdefault(str(ctx.guild.id), {})[uid] = kademe
-        isaretle20()
-        await ctx.send(f"{KADEMELER[kademe]['emoji']} {uye.mention} artık **{KADEMELER[kademe]['ad']}**! "
-                       f"Süre: {bitis_yaz(bitis)}", allowed_mentions=NO_PING)
-        try:
-            await uye.send(
-                f"{KADEMELER[kademe]['emoji']} **{ctx.guild.name}** sunucusunda **{KADEMELER[kademe]['ad']}** oldun! "
-                f"Süre: {bitis_yaz(bitis)}\n"
-                "Avantajların için sunucuda `td!vip` yaz. Günlük bonus: `td!vipgunluk`, kendi rolün: "
-                "`td!viprol <renk>`, resim çizmek için: `td!ciz <tarif>`.")
-        except discord.HTTPException:
-            pass                                  # DM'leri kapalıysa sorun değil
+        if not s and any(bs for _, bs in basarisiz):
+            self.kapali[("arama", model)] = simdi + 900
+        if not t and any(bt for bt, _ in basarisiz):
+            self.kapali[("dusunme", model)] = simdi + 3600
 
-    @commands.hybrid_command(with_app_command=False, name="vipal", aliases=["vipsil"], usage="@kişi")
-    @commands.has_permissions(manage_roles=True)
-    @commands.bot_has_permissions(manage_roles=True)
-    @commands.guild_only()
-    async def vipal(self, ctx, uye: discord.Member):
-        """Birinin VIP'liğini al"""
-        rol = self.vip_rol(ctx.guild)
-        kayitli = vip_kayit(ctx.guild.id).pop(str(uye.id), None) is not None
-        rolde = rol is not None and rol in uye.roles
-        if not kayitli and not rolde:
-            return await ctx.send("❌ Bu kişi VIP değil.")
-        veri["kademe"].get(str(ctx.guild.id), {}).pop(str(uye.id), None)
-        isaretle20()
-        await self.kisisel_sil(ctx.guild, uye.id)
-        if rolde:
+    async def tek_model(self, model, contents, sistem, arama=True):
+        """Tek bir modele sorar. (cevap, hata) döner, asla hata fırlatmaz.
+        Önce hızlı ayarlarla (az düşünme + web araması) dener; model kabul etmezse sırayla kapatır."""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        basliklar = {"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": self.g["GEMINI_KEY"]}
+        denemeler = []
+        for t, s in ((True, True), (False, True), (True, False), (False, False)):
+            if t and not self.aktif_mi("dusunme", model):
+                continue
+            if s and (not arama or not self.aktif_mi("arama", model)):
+                continue
+            denemeler.append((t, s))
+        basarisiz, son, arama_yasak = [], "bilinmiyor", False
+        for t, s in denemeler:
+            if s and arama_yasak:
+                continue
+            cfg = {"maxOutputTokens": AI_MAX_TOKEN}
+            if t:
+                cfg["thinkingConfig"] = {"thinkingLevel": "minimal"}
+            payload = {"systemInstruction": {"parts": [{"text": sistem}]}, "contents": contents,
+                       "generationConfig": cfg}
+            if s:
+                payload["tools"] = [{"google_search": {}}]
             try:
-                await uye.remove_roles(rol, reason=f"{ctx.author} VIP'liği aldı")
-            except discord.HTTPException:
-                return await ctx.send("❌ Rol alınamadı (rol sırası ya da yetki sorunu).")
-        await ctx.send(f"✅ {uye.mention} kişisinin VIP'liği alındı.", allowed_mentions=NO_PING)
-
-    @commands.hybrid_command(with_app_command=False, name="viplistesi", aliases=["viplist", "viplar"])
-    @commands.guild_only()
-    async def viplistesi(self, ctx):
-        """VIP üyeleri listele"""
-        simdi = time.time()
-        liste = [(u, b) for u, b in vip_kayit(ctx.guild.id).items() if b == 0 or b > simdi]
-        if not liste:
-            return await ctx.send("📭 Sunucuda VIP yok.")
-        liste.sort(key=lambda x: (x[1] == 0, x[1]))
-        satirlar = [f"{kademe_ad(kademe_al(ctx.guild.id, u))} <@{u}> — {bitis_yaz(b)}" for u, b in liste[:25]]
-        e = discord.Embed(title=f"👑 VIP listesi ({len(liste)})", description="\n".join(satirlar),
-                          color=discord.Color.gold())
-        await ctx.send(embed=e, allowed_mentions=NO_PING)
-
-    @commands.hybrid_command(with_app_command=False, name="vip", usage="[@kişi]")
-    @commands.guild_only()
-    async def vip(self, ctx, uye: discord.Member = None):
-        """VIP durumunu ve avantajları göster"""
-        uye = uye or ctx.author
-        bitis = vip_kayit(ctx.guild.id).get(str(uye.id))
-        aktif = vip_mi(ctx.guild.id, uye.id)
-        k = kademe_al(ctx.guild.id, uye.id)
-        b = KADEMELER[k]
-        e = discord.Embed(
-            title=f"{b['emoji']} {uye.display_name}",
-            description=f"Durum: **{kademe_ad(k)}** ✅ ({bitis_yaz(bitis)})" if aktif else "Durum: VIP değil ❌",
-            color=discord.Color.gold() if aktif else discord.Color.dark_grey())
-        seri = veri["gunluk"].get(str(ctx.guild.id), {}).get(str(uye.id))
-        seri_yazi = f" (🔥 {seri['seri']} gün serisi)" if aktif and isinstance(seri, dict) and seri.get("seri", 0) > 1 else ""
-        avantaj = [
-            f"🎁 `vipgunluk`: günde bir **{para(int(VIP_GUNLUK_PARA * b['gunluk']))} 🪙 + "
-            f"{int(VIP_GUNLUK_XP * b['gunluk'])} XP**, üst üste alırsan seri bonusu{seri_yazi}",
-        ]
-        if b["indirim"]:
-            avantaj.append(f"🛒 Rol marketinde **%{b['indirim'] * 100:g}** indirim")
-        avantaj += [
-            f"🎨 `ciz`: yapay zekayla günde **{b['ciz']}** resim çiz",
-            "✨ `viprol`: kendi adın ve renginle kişisel rol",
-            "💬 VIP'lere özel yazı ve ses kanalı (`vipkanal` / `vipkanal ses`)",
-            "⚡ Yapay zekada (`ai`) daha kısa bekleme, 'sa' yazınca bot sana kademe simgesiyle cevap verir",
-            "👑 Özel VIP rolü",
-        ]
-        if aktif and k < max(KADEMELER):
-            sonraki = KADEMELER[k + 1]
-            avantaj.append(f"⬆️ Sıradaki kademe **{sonraki['emoji']} {sonraki['ad']}**: "
-                           f"günlük bonus x{sonraki['gunluk']:g}, %{sonraki['indirim'] * 100:g} indirim, "
-                           f"günde {sonraki['ciz']} resim")
-        e.add_field(name="Avantajlar", value="\n".join(avantaj), inline=False)
-        await ctx.send(embed=e, allowed_mentions=NO_PING)
-
-    @commands.hybrid_command(with_app_command=False, name="vipgunluk", aliases=["vipdaily"])
-    @commands.guild_only()
-    async def vipgunluk(self, ctx):
-        """VIP'lere özel günlük bonus (seri bonuslu)"""
-        if not vip_mi(ctx.guild.id, ctx.author.id):
-            return await ctx.send("👑 Bu komut sadece VIP'ler içindir.")
-        d = veri["gunluk"].setdefault(str(ctx.guild.id), {})
-        simdi = time.time()
-        kayit = d.get(str(ctx.author.id), 0)
-        if isinstance(kayit, dict):                 # yeni biçim
-            son, seri = kayit.get("son", 0), kayit.get("seri", 0)
-        else:                                       # eski biçim (sadece zaman)
-            son, seri = kayit, (1 if kayit else 0)
-        if simdi - son < VIP_GUNLUK_SURE:
-            return await ctx.send(f"⏳ VIP bonusunu zaten aldın. <t:{int(son + VIP_GUNLUK_SURE)}:R> tekrar alabilirsin.")
-        seri = seri + 1 if (son and simdi - son <= VIP_GUNLUK_SURE * 2) else 1
-        d[str(ctx.author.id)] = {"son": simdi, "seri": seri}
-        isaretle20()
-        kc = KADEMELER[kademe_al(ctx.guild.id, ctx.author.id)]["gunluk"]
-        carpan = 1 + VIP_SERI_BONUS * (min(seri, VIP_SERI_MAX) - 1)
-        miktar = int(VIP_GUNLUK_PARA * kc * carpan)
-        xp = int(VIP_GUNLUK_XP * kc * carpan)
-        eko_ekle(ctx.guild.id, ctx.author.id, miktar)
-        if xp:
-            await xp_ekle(ctx.guild, ctx.author, xp, ctx.channel)
-        seri_yazi = f"\n🔥 **{seri}. gün serisi** (+%{(carpan - 1) * 100:g} bonus)" if seri > 1 else ""
-        await ctx.send(f"{KADEMELER[kademe_al(ctx.guild.id, ctx.author.id)]['emoji']} VIP bonusun: "
-                       f"**{para(miktar)} 🪙** ve **{xp} XP**!{seri_yazi}")
-
-    @commands.hybrid_command(with_app_command=False, name="viprol", usage="<renk> [isim]")
-    @app_commands.describe(renk="#ff8800 gibi kod ya da kırmızı, mavi, yeşil, mor...",
-                           isim="Rolünde yazacak isim (boşsa adın)")
-    @commands.bot_has_permissions(manage_roles=True)
-    @commands.guild_only()
-    async def viprol(self, ctx, renk: str, *, isim: str = None):
-        """VIP'ler için kişisel renkli rol (adın ve renk seç)"""
-        if not vip_mi(ctx.guild.id, ctx.author.id):
-            return await ctx.send("👑 Bu komut sadece VIP'ler içindir.")
-        vrol = self.vip_rol(ctx.guild)
-        if vrol is None or vrol >= ctx.guild.me.top_role:
-            return await ctx.send("❌ VIP rolü ayarlı değil ya da benim rolümden yüksek.")
-        deger = renk_coz(renk)
-        if deger is None:
-            return await ctx.send("❌ Renk anlaşılmadı. Örnek: `td!viprol #ff8800` ya da `td!viprol mor Kral`")
-        ad = (isim or ctx.author.display_name).replace("@", "").strip()[:28] or "VIP"
-        ad = f"👑 {ad}"
-        await ctx.defer()
-        harita = veri["kisisel"].setdefault(str(ctx.guild.id), {})
-        rol = ctx.guild.get_role(harita.get(str(ctx.author.id), 0))
-        try:
-            if rol is None:
-                rol = await ctx.guild.create_role(name=ad, colour=discord.Colour(deger),
-                                                  reason=f"{ctx.author} kişisel VIP rolü")
-                try:
-                    await rol.edit(position=max(1, vrol.position))
-                except discord.HTTPException:
-                    pass
-            else:
-                await rol.edit(name=ad, colour=discord.Colour(deger), reason=f"{ctx.author} kişisel rolünü değiştirdi")
-            if rol not in ctx.author.roles:
-                await ctx.author.add_roles(rol, reason="Kişisel VIP rolü")
-        except discord.HTTPException:
-            return await ctx.send("❌ Rol oluşturulamadı ya da verilemedi (yetki ya da rol sırası sorunu).")
-        harita[str(ctx.author.id)] = rol.id
-        isaretle20()
-        await ctx.send(f"✨ Kişisel rolün hazır: {rol.mention}", allowed_mentions=NO_PING)
-
-    @commands.hybrid_command(with_app_command=False, name="vipkanal", usage="[ses]")
-    @commands.has_permissions(manage_channels=True)
-    @commands.bot_has_permissions(manage_channels=True)
-    @commands.guild_only()
-    async def vipkanal(self, ctx, tur: str = "yazi"):
-        """Sadece VIP'lerin görebildiği yazı kanalı aç (`vipkanal ses` yazarsan ses kanalı)"""
-        rol = self.vip_rol(ctx.guild)
-        if rol is None:
-            return await ctx.send("❌ Önce `td!vipkur` ile VIP rolünü ayarla.")
-        ses = tur.lower() in ("ses", "voice", "sesli")
-        anahtar = "ses" if ses else "kanal"
-        ayar = veri["sunucu"].setdefault(str(ctx.guild.id), {})
-        mevcut = ctx.guild.get_channel(ayar.get(anahtar, 0))
-        if mevcut is not None:
-            return await ctx.send(f"ℹ️ VIP {'ses ' if ses else ''}kanalı zaten var: {mevcut.mention}")
-        await ctx.defer()
-        izinler = {
-            ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            rol: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
-                                             connect=True, speak=True),
-            ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True),
-        }
-        try:
-            if ses:
-                kanal = await ctx.guild.create_voice_channel(
-                    "👑┃VIP Ses", overwrites=izinler, reason=f"{ctx.author} VIP ses kanalı açtı")
-            else:
-                kanal = await ctx.guild.create_text_channel(
-                    "👑┃vip-sohbet", overwrites=izinler, topic="Sadece VIP'lere özel sohbet",
-                    reason=f"{ctx.author} VIP kanalı açtı")
-        except discord.HTTPException:
-            return await ctx.send("❌ Kanal açılamadı.")
-        ayar[anahtar] = kanal.id
-        isaretle20()
-        await ctx.send(f"✅ VIP {'ses ' if ses else ''}kanalı açıldı: {kanal.mention}")
-
-    @commands.hybrid_command(with_app_command=False, name="ciz", aliases=["çiz", "draw"], usage="<ne çizilsin>")
-    @app_commands.describe(tarif="Ne çizilsin? Ne kadar ayrıntılı yazarsan o kadar güzel olur")
-    @commands.guild_only()
-    async def ciz(self, ctx, *, tarif: str):
-        """VIP'lere özel: yapay zekayla yazdığın şeyin resmini çiz"""
-        if not vip_mi(ctx.guild.id, ctx.author.id):
-            return await ctx.send("👑 Bu komut sadece VIP'ler içindir.")
-        tarif = tarif.strip()
-        if len(tarif) < 3:
-            return await ctx.send("❌ Ne çizeyim? Biraz daha ayrıntı yaz.")
-        if len(tarif) > CIZ_MAX_HARF:
-            return await ctx.send(f"❌ Tarif en fazla {CIZ_MAX_HARF} karakter olabilir.")
-        simdi = time.time()
-        kalan = CIZ_BEKLEME - (simdi - self.ciz_son.get(ctx.author.id, 0))
-        if kalan > 0:
-            return await ctx.send(f"⏳ {kalan:.0f} saniye sonra tekrar dene.")
-        bugun = datetime.datetime.now(TR).strftime("%Y-%m-%d")
-        kayit = veri["ciz"].setdefault(str(ctx.author.id), {"gun": bugun, "adet": 0})
-        if kayit["gun"] != bugun:
-            kayit["gun"], kayit["adet"] = bugun, 0
-        limit = KADEMELER[kademe_al(ctx.guild.id, ctx.author.id)]["ciz"]
-        if kayit["adet"] >= limit:
-            return await ctx.send(f"🎨 Bugünkü {limit} resim hakkını kullandın, yarın tekrar gel.")
-        self.ciz_son[ctx.author.id] = simdi
-        kayit["adet"] += 1
-        isaretle20()
-        await ctx.defer()
-        durum = await ctx.send("🎨 Çiziyorum... (10-40 saniye sürebilir)")
-        try:
-            bayt, hata = await asyncio.wait_for(asyncio.to_thread(resim_uret, tarif), CIZ_ZAMAN_ASIMI)
-        except asyncio.TimeoutError:
-            bayt, hata = None, "zaman"
-        except Exception as e:
-            print(f"ciz hatası: {e!r}")
-            bayt, hata = None, type(e).__name__
-        if not bayt:
-            kayit["adet"] = max(0, kayit["adet"] - 1)      # başarısız denemeler hakkından düşmez
-            self.ciz_son.pop(ctx.author.id, None)
-            isaretle20()
-            yazi = CIZ_HATA.get(hata, f"❌ Resim çizilemedi ({hata}). Sebebini görmek için yetkili `td!ciztest` yazabilir.")
-            try:
-                return await durum.edit(content=yazi)
-            except discord.HTTPException:
-                return await ctx.send(yazi)
-        kalan_hak = limit - kayit["adet"]
-        await ctx.send(
-            f"🎨 **{tarif[:200]}**\n_Yapay zeka ile çizildi • bugün {kalan_hak} hakkın kaldı_",
-            file=discord.File(io.BytesIO(bayt), filename=f"resim.{uzanti(bayt)}"),
-            allowed_mentions=NO_PING)
-        try:
-            await durum.delete()
-        except discord.HTTPException:
-            pass
-
-    @commands.hybrid_command(name="ciztest", with_app_command=False)
-    @commands.has_permissions(manage_guild=True)
-    @commands.guild_only()
-    async def ciztest(self, ctx):
-        """Resim çizme modellerini dene ve tam hatayı göster (yetkili)"""
-        await ctx.send(f"🔎 {len(RESIM_MODELLER)} Gemini modeli ve ücretsiz servis deneniyor, 1-2 dakika sürebilir...")
-        satirlar = []
-        for model in RESIM_MODELLER:
-            t0 = time.perf_counter()
-            try:
-                bayt, kod, detay = await asyncio.wait_for(
-                    asyncio.to_thread(resim_model, model, "kırmızı bir elma"), 60)
+                async with self.oturum().post(
+                        url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=basliklar) as r:
+                    govde = await r.text()
+                    if r.status == 200:
+                        metin = self.cevap_cikar(govde)
+                        if metin:
+                            self.ogren(model, basarisiz, t, s)
+                            return metin, ""
+                        son = "bos"
+                        continue
+                    if r.status in (400, 403, 429):
+                        print(f"Gemini hatası ({model}, düşünme={t}, arama={s}) HTTP {r.status}: {govde[:200]}")
+                        son = f"HTTP {r.status}"
+                        if r.status == 429 and not s:
+                            return None, son              # genel kota, başka ayar fayda etmez
+                        if r.status in (403, 429):
+                            arama_yasak = True            # arama kotası/izni yok: aramasız dene
+                        basarisiz.append((t, s))
+                        continue
+                    print(f"Gemini hatası ({model}) HTTP {r.status}: {govde[:200]}")
+                    return None, f"HTTP {r.status}"
             except asyncio.TimeoutError:
-                bayt, kod, detay = None, "zaman", "60 saniyede cevap gelmedi"
-            sn = time.perf_counter() - t0
-            satirlar.append(f"✅ `{model}` çizdi ({sn:.1f} sn)" if bayt else f"❌ `{model}`: {kod} — {detay[:180]}")
-        t0 = time.perf_counter()
-        try:
-            bayt, kod, detay = await asyncio.wait_for(asyncio.to_thread(resim_ucretsiz, "kırmızı bir elma"), 90)
-        except asyncio.TimeoutError:
-            bayt, kod, detay = None, "zaman", "90 saniyede cevap gelmedi"
-        sn = time.perf_counter() - t0
-        satirlar.append(f"✅ ücretsiz servis çizdi ({sn:.1f} sn)" if bayt else f"❌ ücretsiz servis: {kod} — {detay[:150]}")
-        kapali = max(0, int(gemini_kapali_bitis - time.time()))
-        if kapali:
-            satirlar.append(f"ℹ️ Gemini kota hatası yüzünden {kapali // 60} dk daha atlanacak.")
-        await ctx.send("🎨 **Çizim testi**\n" + "\n".join(satirlar))
-
-    # ================= ⏱️ Olaylar ve döngü =================
-    @commands.Cog.listener()
-    async def on_member_join(self, uye):
-        """Sunucudan çıkıp geri giren VIP'in rolünü geri ver"""
-        if uye.bot or not vip_mi(uye.guild.id, uye.id):
-            return
-        rol = self.vip_rol(uye.guild)
-        if rol is not None and rol < uye.guild.me.top_role:
-            try:
-                await uye.add_roles(rol, reason="VIP rolü geri verildi")
-            except discord.HTTPException:
-                pass
-
-    async def sure_kontrol(self):
-        simdi = time.time()
-        for gid, kayit in list(veri["vip"].items()):
-            guild = self.bot.get_guild(int(gid))
-            if guild is None:
-                continue                          # sunucu şu an erişilemiyor, sonra tekrar dener
-            uyarilar = veri["uyari"].setdefault(gid, {})
-            for uid, bitis in list(kayit.items()):
-                if not bitis:
-                    continue
-                uye = guild.get_member(int(uid))
-                if bitis > simdi:
-                    # bitmeye 1 gün kala bir kere DM ile haber ver
-                    if bitis - simdi <= VIP_UYARI_SURE and uyarilar.get(uid) != bitis and uye is not None:
-                        uyarilar[uid] = bitis
-                        isaretle20()
-                        try:
-                            await uye.send(f"👑 **{guild.name}** sunucusundaki VIP süren {bitis_yaz(bitis)} bitecek.")
-                        except discord.HTTPException:
-                            pass
-                    continue
-                rol = self.vip_rol(guild)
-                if rol is not None and uye is not None and rol in uye.roles:
-                    try:
-                        await uye.remove_roles(rol, reason="VIP süresi doldu")
-                    except discord.HTTPException:
-                        pass
-                await self.kisisel_sil(guild, uid)
-                kayit.pop(uid, None)
-                uyarilar.pop(uid, None)
-                veri["kademe"].get(gid, {}).pop(uid, None)
-                isaretle20()
-
-    async def dongu(self):
-        await self.bot.wait_until_ready()
-        while not self.bot.is_closed():
-            try:
-                await self.sure_kontrol()
-                if kirli:
-                    kaydet()
+                return None, "zaman aşımı"
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                print(f"v20 arka plan hatası: {e!r}")
-            await asyncio.sleep(60)
+                print(f"Gemini hatası ({model}): {e!r}")
+                son = type(e).__name__
+                break
+        return None, son
+
+    async def hizli_istek(self, contents, sistem, arama=True):
+        """İlk model yavaşsa ya da hata verirse yedek modeli beklemeden başlatır."""
+        modeller = list(self.g.get("AI_MODELLER") or [])
+        if not modeller:
+            return None, "model yok"
+        beklenen = {asyncio.create_task(self.tek_model(modeller[0], contents, sistem, arama))}
+        sira = 1
+        son_hata = "bilinmiyor"
+        try:
+            while beklenen:
+                zaman = AI_YEDEK_BEKLEME if sira < len(modeller) else None
+                bitenler, beklenen = await asyncio.wait(beklenen, timeout=zaman, return_when=asyncio.FIRST_COMPLETED)
+                for t in bitenler:
+                    cevap, hata = t.result()
+                    if cevap:
+                        return cevap, ""
+                    son_hata = hata
+                if (not bitenler or not beklenen) and sira < len(modeller):
+                    beklenen.add(asyncio.create_task(self.tek_model(modeller[sira], contents, sistem, arama)))
+                    sira += 1
+            return None, son_hata
+        finally:
+            for t in beklenen:
+                t.cancel()
+
+    # ================= main.py'deki ai_cevapla'nın yerine geçer =================
+    async def ai_cevapla(self, kullanici, kanal_id, soru, resimler=None, sessiz=False):
+        """Her zaman gönderilecek bir metin döner (cevap ya da hata mesajı).
+        resimler: [(mime_tipi, bayt), ...]. sessiz=True ise (kendiliğinden sohbet) hata/bekleme mesajı yerine None döner."""
+        g = self.g
+        resimler = resimler or []
+        simdi = time.time()
+        son_soru, gecmis = g["ai_son_soru"], g["ai_gecmis"]
+        gid = getattr(getattr(kullanici, "guild", None), "id", 0)
+        vip, _ = vip_bilgi(gid, kullanici.id)
+        bekleme = min(g["AI_BEKLEME"], 1) if vip else g["AI_BEKLEME"]     # 👑 VIP'ler daha az bekler
+        kalan = bekleme - (simdi - son_soru.get(kullanici.id, 0))
+        if kalan > 0:
+            return None if sessiz else f"⏳ Biraz yavaş, {int(kalan) + 1} saniye sonra tekrar sor."
+        son_soru[kullanici.id] = simdi
+
+        soru = soru.strip()[:1500]
+        ad = kullanici.display_name
+
+        if not resimler:
+            hazir = ogretilen_cevap(gid, soru)         # senin öğrettiğin cevap: API'ye gitmeden anında
+            if hazir:
+                return hazir.replace("{isim}", ad)
+
+        anahtar = (kanal_id, kullanici.id)
+        kayit = gecmis.get(anahtar)
+        if kayit and simdi - kayit["son"] > g["AI_HAFIZA_SURE"]:
+            kayit = None
+        mesajlar = list(kayit["mesajlar"]) if kayit else []
+
+        onb = (gid, norm(soru)) if (not mesajlar and not resimler) else None   # sadece sohbetin ilk (görselsiz) sorusu
+        cevap, hata = None, ""
+        if onb:
+            hit = self.onbellek.get(onb)
+            if hit and simdi - hit[0] < AI_ONBELLEK_SURE:
+                cevap = hit[1]
+
+        mesajlar.append(("user", soru + (" [görsel gönderdi]" if resimler else "")))
+        if not cevap:
+            contents = [{"role": r, "parts": [{"text": t}]} for r, t in mesajlar]
+            contents[-1]["parts"][0]["text"] = soru            # görsel işareti sadece hafıza içindi
+            for mime, bayt in resimler:
+                contents[-1]["parts"].append({"inline_data": {"mime_type": mime,
+                                                              "data": base64.b64encode(bayt).decode()}})
+            sistem = sistem_metni(g) + f" Şu an konuştuğun kişinin adı: {ad}." + baglam(gid, soru)
+            cevap, hata = await self.hizli_istek(contents, sistem, AI_ARAMA)
+            if cevap and onb and KAYNAK_ONEK not in cevap and ad.lower() not in cevap.lower():
+                if len(self.onbellek) >= AI_ONBELLEK_MAX:
+                    self.onbellek.pop(next(iter(self.onbellek)))
+                self.onbellek[onb] = (simdi, cevap)
+
+        if cevap:
+            mesajlar.append(("model", cevap.split(KAYNAK_ONEK)[0]))   # kaynak linkleri hafızaya girmesin
+            mesajlar = mesajlar[-g["AI_HAFIZA_MAX"]:]
+            while mesajlar and mesajlar[0][0] != "user":
+                mesajlar.pop(0)
+            gecmis[anahtar] = {"mesajlar": mesajlar, "son": simdi}
+            return cevap
+        if sessiz:
+            return None
+        if hata == "HTTP 429":
+            return "⏳ Şu an çok fazla istek var, biraz sonra tekrar dene."
+        if hata == "bos":
+            return "🤐 Buna cevap veremedim, başka türlü sor."
+        return f"😵 Şu an cevap veremiyorum. ({hata})"
+
+    # ================= 💬 Komutsuz sohbet (sa -> as, soru cevaplama) =================
+    @staticmethod
+    def sohbet_ayar(gid):
+        return veri["sohbet"].setdefault(str(gid), {"acik": True, "kanallar": []})
+
+    @staticmethod
+    async def hala_var(mesaj):
+        """Mesaj hâlâ duruyor mu? (otomod sildiyse ona cevap verme)"""
+        try:
+            await mesaj.channel.fetch_message(mesaj.id)
+            return True
+        except discord.NotFound:
+            return False
+        except discord.HTTPException:
+            return True
+
+    async def guvenli_cevap(self, mesaj, parcalar):
+        if not await self.hala_var(mesaj):
+            return
+        if not mesaj.channel.permissions_for(mesaj.guild.me).send_messages:
+            return
+        for i, p in enumerate(parcalar):
+            try:
+                if i == 0:
+                    await mesaj.reply(p, mention_author=False, allowed_mentions=NO_PING)
+                else:
+                    await mesaj.channel.send(p, allowed_mentions=NO_PING)
+            except discord.HTTPException:
+                return
+
+    @commands.Cog.listener()
+    async def on_message(self, mesaj):
+        if mesaj.author.bot or mesaj.guild is None or not mesaj.content:
+            return
+        icerik = mesaj.content.strip()
+        prefixler = tuple(self.g.get("PREFIXLER", ("td/", "td!")))
+        if icerik.startswith(prefixler) or len(icerik) > 400 or mesaj.reference is not None:
+            return                                   # komutlar ve yanıtlar (etiket/yanıt main.py'de) burada değil
+        if self.bot.user in mesaj.mentions:
+            return                                   # bota etiket: main.py halleder
+        d = self.sohbet_ayar(mesaj.guild.id)
+        n = norm(icerik)
+        if not n:
+            return
+        simdi = time.time()
+        gid, uid = mesaj.guild.id, mesaj.author.id
+
+        # 1) Hazır selamlaşma ya da senin öğrettiğin birebir tetikleyici (API kullanmaz, anında)
+        cevap = None
+        if d["acik"]:
+            if len(icerik) <= 60 and len(n) >= 2:
+                secenekler = SELAM_HARITA.get(sikistir(n))
+                if secenekler:
+                    cevap = random.choice(secenekler)
+            if cevap is None:
+                cevap = ogretilen_tam(gid, n)
+        if cevap:
+            if (simdi - self.selam_kullanici.get(uid, 0) < SELAM_KULLANICI_BEKLEME
+                    or simdi - self.selam_kanal.get(mesaj.channel.id, 0) < SELAM_KANAL_BEKLEME):
+                return
+            self.selam_kullanici[uid] = self.selam_kanal[mesaj.channel.id] = simdi
+            cevap = cevap.replace("{isim}", mesaj.author.display_name)
+            vip, simge = vip_bilgi(gid, uid)
+            if vip:
+                cevap += f" {simge}"
+            await self.guvenli_cevap(mesaj, [cevap[:1900]])
+            return
+
+        # 2) Soru cevaplama için açılmış kanallarda: soruya benzeyen mesajı yapay zeka cevaplar
+        if (mesaj.channel.id in d["kanallar"] and len(icerik) >= 6 and soru_mu(icerik, n)
+                and simdi - self.soru_kanal.get(mesaj.channel.id, 0) >= SORU_KANAL_BEKLEME):
+            self.soru_kanal[mesaj.channel.id] = simdi
+            async with mesaj.channel.typing():
+                cevap = await self.ai_cevapla(mesaj.author, mesaj.channel.id, icerik, None, sessiz=True)
+            if cevap:
+                await self.guvenli_cevap(mesaj, parcala(cevap)[:3])
+
+    @commands.hybrid_command(name="sohbet", with_app_command=False, usage="[ac | kapat | kanal]")
+    @commands.has_permissions(manage_guild=True)
+    @commands.guild_only()
+    async def sohbet(self, ctx, islem: str = None):
+        """Otomatik sohbet: selamlaşma (sa → as) ve seçili kanallarda soru cevaplama"""
+        d = self.sohbet_ayar(ctx.guild.id)
+        islem = norm(islem or "")
+        if islem == "ac":
+            d["acik"] = True
+            kaydet()
+            return await ctx.send("✅ Otomatik selamlaşma **açıldı**. (sa → as, selam → selam sana ...)")
+        if islem == "kapat":
+            d["acik"] = False
+            kaydet()
+            return await ctx.send("🔕 Otomatik selamlaşma **kapatıldı**.")
+        if islem == "kanal":
+            if ctx.channel.id in d["kanallar"]:
+                d["kanallar"].remove(ctx.channel.id)
+                kaydet()
+                return await ctx.send("🔕 Bu kanalda artık sorulara kendiliğinden cevap vermeyeceğim.")
+            d["kanallar"].append(ctx.channel.id)
+            kaydet()
+            return await ctx.send("✅ Bu kanalda soru gibi görünen mesajlara kendiliğinden cevap vereceğim.")
+        kanallar = ", ".join(f"<#{k}>" for k in d["kanallar"]) or "yok"
+        await ctx.send(
+            "💬 **Otomatik sohbet**\n"
+            f"• Selamlaşma (sa → as, selam → selam sana): **{'açık' if d['acik'] else 'kapalı'}**\n"
+            f"• Sorulara kendiliğinden cevap verilen kanallar: {kanallar}\n"
+            "Komutlar: `td!sohbet ac`, `td!sohbet kapat`, `td!sohbet kanal` (bulunduğun kanalı ekler/çıkarır).\n"
+            "Yeni tetikleyici öğretmek için: `td!ogret sa | as` (mesaj birebir aynı yazılırsa cevap verir).",
+            allowed_mentions=NO_PING)
+
+    # ================= 💬 ai komutu (main.py'dekinin yerine: görsel okur) =================
+    async def resimleri_al(self, mesaj):
+        """Mesajdaki (ve cevap verilen mesajdaki) görselleri indirir. (resimler, atlanan_sayi) döner."""
+        adaylar = list(mesaj.attachments)
+        ref = mesaj.reference
+        if ref is not None and ref.message_id:
+            hedef = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+            if hedef is None:
+                try:
+                    hedef = await mesaj.channel.fetch_message(ref.message_id)
+                except discord.HTTPException:
+                    hedef = None
+            if hedef is not None:
+                adaylar += list(hedef.attachments)
+        resimler, atlanan = [], 0
+        for a in adaylar:
+            tur = (a.content_type or "").split(";")[0].lower()
+            if not tur.startswith("image/"):
+                continue
+            if tur not in GORSEL_TURLER or a.size > GORSEL_MAX_MB * 1024 * 1024 or len(resimler) >= GORSEL_MAX:
+                atlanan += 1
+                continue
+            try:
+                resimler.append((tur, await a.read()))
+            except discord.HTTPException:
+                atlanan += 1
+        return resimler, atlanan
+
+    @commands.hybrid_command(name="ai", with_app_command=False, usage="<soru>  (resim de ekleyebilirsin)")
+    async def ai(self, ctx, *, soru: str = None):
+        """Yapay zekayla sohbet et: görsel okur, bilmediğini webde arar (konuşmayı hatırlar)"""
+        resimler, atlanan = ([], 0)
+        if ctx.message is not None:
+            resimler, atlanan = await self.resimleri_al(ctx.message)
+        if atlanan:
+            await ctx.send(f"🖼️ {atlanan} görseli okuyamadım (png, jpg ya da webp olmalı, en fazla {GORSEL_MAX_MB} MB, "
+                           f"en fazla {GORSEL_MAX} tane).")
+        if not soru and not resimler:
+            if not atlanan:
+                await ctx.send("Efendim? Sorunu yazmak için: `td/ai <sorun>` (resim de ekleyebilirsin)")
+            return
+        if not soru:
+            soru = "Bu görselde ne var? Yazı varsa oku, kısaca anlat."
+        async with ctx.typing():
+            cevap = await self.ai_cevapla(ctx.author, ctx.channel.id, soru, resimler)
+        for parca in parcala(cevap):
+            await ctx.send(parca, allowed_mentions=NO_PING)
+
+    # ================= 🧠 Eğitim komutları =================
+    @commands.hybrid_command(name="ogret", aliases=["öğret", "aiegit"], with_app_command=False,
+                             usage="<soru> | <cevap>   ya da   <bilgi>")
+    @commands.has_permissions(manage_guild=True)
+    @commands.guild_only()
+    async def ogret(self, ctx, *, metin: str):
+        """Yapay zekaya hazır cevap ya da bilgi öğret"""
+        d = sunucu(ctx.guild.id)
+        if "|" in metin:
+            soru, cevap = (x.strip() for x in metin.split("|", 1))
+            if len(soru) < 2 or not cevap:
+                return await ctx.send("❌ Şöyle yaz: `td!ogret merhaba | Selam {isim}!`")
+            if len(soru) > 150 or len(cevap) > 500:
+                return await ctx.send("❌ Soru en fazla 150, cevap en fazla 500 karakter olabilir.")
+            n = norm(soru)
+            for k in d["sorular"]:
+                if (k.get("n") or norm(k["s"])) == n:
+                    k["c"] = cevap
+                    kaydet()
+                    return await ctx.send(f"♻️ **S{k['id']}** güncellendi.")
+            if len(d["sorular"]) >= MAX_SORU:
+                return await ctx.send(f"❌ En fazla {MAX_SORU} soru-cevap öğretilebilir, eskilerini `td!aisil` ile sil.")
+            d["sayac"] += 1
+            d["sorular"].append({"id": d["sayac"], "s": soru, "c": cevap, "n": n})
+            kaydet()
+            return await ctx.send(f"✅ Öğrendim! **S{d['sayac']}**: biri bunu sorarsa anında cevaplarım.")
+        bilgi = metin.strip()
+        if len(bilgi) < 5 or len(bilgi) > 300:
+            return await ctx.send("❌ Bilgi 5 ile 300 karakter arasında olmalı.")
+        if len(d["bilgiler"]) >= MAX_BILGI:
+            return await ctx.send(f"❌ En fazla {MAX_BILGI} bilgi öğretilebilir, eskilerini `td!aisil` ile sil.")
+        d["sayac"] += 1
+        d["bilgiler"].append({"id": d["sayac"], "t": bilgi})
+        kaydet()
+        await ctx.send(f"✅ Öğrendim! **B{d['sayac']}**: artık cevap verirken bunu da bilirim.")
+
+    @commands.hybrid_command(name="ogretilenler", aliases=["öğretilenler", "aibilgiler"], with_app_command=False,
+                             usage="[sayfa]")
+    @commands.guild_only()
+    async def ogretilenler(self, ctx, sayfa: int = 1):
+        """Yapay zekaya öğretilenleri listele"""
+        d = sunucu(ctx.guild.id)
+        satirlar = [f"**S{k['id']}** {k['s'][:60]} → {k['c'][:80]}" for k in d["sorular"]]
+        satirlar += [f"**B{b['id']}** {b['t'][:120]}" for b in d["bilgiler"]]
+        if not satirlar:
+            return await ctx.send("📭 Henüz bir şey öğretilmedi. Başlamak için: `td!ogret merhaba | Selam {isim}!`")
+        toplam = (len(satirlar) + 9) // 10
+        sayfa = max(1, min(sayfa, toplam))
+        await ctx.send(
+            f"🧠 **Öğretilenler** (S = soru-cevap, B = bilgi) • sayfa {sayfa}/{toplam}\n"
+            + "\n".join(satirlar[(sayfa - 1) * 10:sayfa * 10]), allowed_mentions=NO_PING)
+
+    @commands.hybrid_command(name="aisil", with_app_command=False, usage="<S3 ya da B2>")
+    @commands.has_permissions(manage_guild=True)
+    @commands.guild_only()
+    async def aisil(self, ctx, kod: str):
+        """Öğretilen bir soru-cevabı ya da bilgiyi sil (örnek: S3, B2)"""
+        m = re.fullmatch(r"([SB])(\d+)", kod.strip().upper())
+        if not m:
+            return await ctx.send("❌ `td!aisil S3` ya da `td!aisil B2` şeklinde yaz (`td!ogretilenler`'de kodlar var).")
+        d = sunucu(ctx.guild.id)
+        liste = d["sorular"] if m.group(1) == "S" else d["bilgiler"]
+        for i, k in enumerate(liste):
+            if k["id"] == int(m.group(2)):
+                liste.pop(i)
+                kaydet()
+                return await ctx.send(f"🗑️ **{m.group(1)}{m.group(2)}** silindi.")
+        await ctx.send("❌ Böyle bir kayıt yok.")
+
+    @commands.hybrid_command(name="aitest", with_app_command=False)
+    @commands.has_permissions(manage_guild=True)
+    async def aitest(self, ctx):
+        """Yapay zeka modellerinin hızını ölç"""
+        satirlar = []
+        async with ctx.typing():
+            for model in list(self.g.get("AI_MODELLER") or []):
+                t0 = time.perf_counter()
+                cevap, hata = await self.tek_model(
+                    model, [{"role": "user", "parts": [{"text": "Sadece 'tamam' de."}]}], "Kısa cevap ver.", arama=False)
+                ms = int((time.perf_counter() - t0) * 1000)
+                satirlar.append(f"✅ `{model}`: **{ms} ms**" if cevap else f"❌ `{model}`: {hata} ({ms} ms)")
+        await ctx.send("⚡ **Hız testi**\n" + "\n".join(satirlar or ["Hiç model tanımlı değil."]))
 
 
 # ----------------------------------------------------------------------
 # Yükleme (main.py setup_hook içinden çağrılır)
 # ----------------------------------------------------------------------
 async def kur(bot, g):
-    global GEMINI_KEY
-    GEMINI_KEY = g.get("GEMINI_KEY")      # main.py'deki mevcut anahtar; API koduna dokunulmaz
     yukle()
-    cog = V20(bot, g)
-    await bot.add_cog(cog)
-    cog.gorev = asyncio.create_task(cog.dongu())
-    atexit.register(lambda: kaydet() if kirli else None)
+    cog = HizliAI(bot, g)
+    eski_ai = bot.remove_command("ai")        # main.py'deki eski `ai` komutu, görsel okuyan yenisiyle değişir
+    try:
+        await bot.add_cog(cog)
+    except Exception:
+        if eski_ai is not None:
+            bot.add_command(eski_ai)          # hata olursa eski komut geri gelsin
+        raise
+    g["ai_cevapla"] = cog.ai_cevapla          # eski kod yolu için
+    g["ai"] = cog.ai                           # main.py etiket/yanıt kodu `ai` adını kullanır: yeni (görsel okuyan) komut
     g["EK_KATEGORILER"].update(YARDIM)
-    print(f"v20 yüklendi: VIP + ciz komutları hazır (anahtar {'var' if GEMINI_KEY else 'YOK'}).")
