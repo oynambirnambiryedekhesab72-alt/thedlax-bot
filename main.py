@@ -17,9 +17,12 @@ from discord.ext import commands
 
 SURUM = "2.0"
 DEGISIKLIKLER = (
-    "👑 **VIP**: 3 kademe (VIP, VIP+, VIP MAX), seri bonuslu `vipgunluk`, `viprol`, `vipkanal`, süre bitmeden DM uyarısı\n"
+    "🔀 **Slash komutları gruplandı**: `/muzik cal`, `/ekonomi bakiye`, `/mod kick`, `/xp profil`... (`td!` komutları aynı)\n"
+    "👁️ **Yapay zeka** artık görsel okuyor, bilmediğini webde arıyor, gerekirse uzun cevap yazıyor (`td!ai`)\n"
+    "💬 **Komutsuz sohbet**: biri `sa` yazarsa `as`, `selam` yazarsa `selam sana` der (`td!sohbet` ile ayarla)\n"
+    "🧠 `ogret` ile yapay zekaya hazır cevap ve bilgi öğretebilirsin\n"
+    "👑 **VIP**: 3 kademe, seri bonuslu `vipgunluk`, `viprol`, `vipkanal [ses]`, süre uyarısı, hoş geldin DM'i\n"
     "🎨 **Çiz**: VIP'lere özel `ciz` (yapay zekayla resim çizer)\n"
-    "⚡ **Yapay zeka** çok daha hızlı; `ogret` ile ona hazır cevap ve bilgi öğretebilirsin\n"
     "🔤 Komutlar artık Türkçe harfle de çalışıyor (`td!satınal`, `td!çiz`...)\n"
     "✉️ **DM**: `dm` artık yazdığın mesajı olduğu gibi iletir (gönderen adı yok)\n"
     "🧠 **Günün Sorusu** ve 💬 **Aktiflik**: panelsiz, normal yazı + @everyone\n"
@@ -376,7 +379,7 @@ async def setup_hook():
     for kayit in list(hatirlatmalar):
         hatirlatma_baslat(kayit)
     # Modülleri sırayla yükle; biri hata verirse sebebi hem konsola hem `td!modul` komutuna yazılır
-    for ad, giris in (("v15", "yukle"), ("v151", "kur"), ("v18", "kur"), ("v20", "kur"), ("v20_ai", "kur")):
+    for ad, giris in (("v15", "yukle"), ("v151", "kur"), ("v18", "kur"), ("v20", "kur"), ("v20_ai", "kur"), ("v20_slash", "kur")):
         try:
             modul = importlib.import_module(ad)
             await getattr(modul, giris)(bot, globals())
@@ -401,7 +404,7 @@ async def modul(ctx):
     """Hangi modüllerin yüklendiğini göster (yetkili)"""
     klasor = os.path.dirname(os.path.abspath(__file__))
     satirlar = []
-    for ad in ("v15", "v151", "v18", "v20", "v20_ai"):
+    for ad in ("v15", "v151", "v18", "v20", "v20_ai", "v20_slash"):
         dosya = "dosya var" if os.path.exists(os.path.join(klasor, ad + ".py")) else "DOSYA YOK"
         satirlar.append(f"`{ad}.py` ({dosya}): {MODUL_DURUM.get(ad, '⏳ denenmedi')}")
     kontrol = ", ".join(f"{k} {'✅' if bot.get_command(k) else '❌'}" for k in ("vip", "ciz", "satinal", "ogret"))
@@ -1223,7 +1226,7 @@ def yardim_ana_embed(sayfalar):
     embed = discord.Embed(
         title=f"📖 THEDLAX v{SURUM} Komutları",
         description=(
-            "`/` yaz, komutlar kendiliğinden çıkar. Ya da prefix: `td!` / `td/` (bazı komutlar sadece prefix ile çalışır)\n"
+            "`/` yaz, komutlar gruplar halinde çıkar (örn. `/muzik cal`, `/ekonomi bakiye`, `/mod kick`). Ya da prefix: `td!` / `td/` (bazı komutlar sadece prefix ile çalışır)\n"
             "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Süre örnekleri: `30s` `5m` `2h` `1d`\n\n"
             "**Aşağıdaki menüden bir kategori seç:**\n"
             + "\n".join(f"• {ad}" for ad in sayfalar)
