@@ -5,7 +5,7 @@ THEDLAX BOT v2.0 - VIP modülü
 main.py bunu v18.py'den sonra otomatik yükler. Bu dosya yoksa bot yine açılır.
 Komutlar (td!komut ile çalışır; Discord 100 slash sınırı dolu olduğu için slash yok):
   👑 VIP   : vipkur, vipver, vipal, viplistesi, vip, vipgunluk  (3 kademe: VIP, VIP+, VIP MAX)
-  ✨ VIP+  : viprol (kişisel renkli rol), vipkanal (VIP'lere özel kanal)
+  ✨ VIP+  : viprol (kişisel renkli rol), vipkanal [ses] (VIP'lere özel yazı/ses kanalı)
   🎨 Çizim : ciz (yapay zekayla resim çizer, sadece VIP)
 
 VIP avantajları:
@@ -14,7 +14,9 @@ VIP avantajları:
   - Rol marketinde indirim
   - Kişisel rol (kendi adın + istediğin renk) ve VIP'lere özel sohbet kanalı
   - ciz: yapay zekayla resim çizme (Gemini)
-  - Ülke Topları'nda günlük bedava top ve daha iyi bonuslar (v20_toplar.py)
+  - Yapay zekada (td!ai) bekleme süresi kısa, otomatik selamlaşmada adının yanına kademe simgesi eklenir
+  - VIP'lere özel yazı ve ses kanalı (vipkanal / vipkanal ses)
+  - VIP olunca hoş geldin DM'i
 Veriler veri_v20.json dosyasında tutulur.
 """
 import io
@@ -306,7 +308,7 @@ YARDIM = {
         "`vipkur [@rol]` VIP rolünü ayarla (boşsa 👑 VIP rolü açılır) (Sunucuyu Yönet)",
         "`vipver @kişi [gün] [kademe 1-3]` VIP ver: 1=VIP, 2=VIP+, 3=VIP MAX (gün yazmazsan kalıcı) (Rolleri Yönet)",
         "`vipal @kişi` VIP'liği al  •  `viplistesi` VIP'leri listele",
-        "`vipkanal` VIP'lere özel sohbet kanalı aç (Kanalları Yönet)",
+        "`vipkanal [ses]` VIP'lere özel yazı (ya da ses) kanalı aç (Kanalları Yönet)",
         "`vip [@kişi]` VIP durumu ve avantajlar",
         f"`vipgunluk` günlük VIP bonusu (+{VIP_GUNLUK_PARA} 🪙 +{VIP_GUNLUK_XP} XP, seri bonuslu)",
         "`viprol <renk> [isim]` kendi renkli rolünü yap (VIP)",
@@ -410,6 +412,14 @@ class V20(commands.Cog):
         isaretle20()
         await ctx.send(f"{KADEMELER[kademe]['emoji']} {uye.mention} artık **{KADEMELER[kademe]['ad']}**! "
                        f"Süre: {bitis_yaz(bitis)}", allowed_mentions=NO_PING)
+        try:
+            await uye.send(
+                f"{KADEMELER[kademe]['emoji']} **{ctx.guild.name}** sunucusunda **{KADEMELER[kademe]['ad']}** oldun! "
+                f"Süre: {bitis_yaz(bitis)}\n"
+                "Avantajların için sunucuda `td!vip` yaz. Günlük bonus: `td!vipgunluk`, kendi rolün: "
+                "`td!viprol <renk>`, resim çizmek için: `td!ciz <tarif>`.")
+        except discord.HTTPException:
+            pass                                  # DM'leri kapalıysa sorun değil
 
     @commands.hybrid_command(with_app_command=False, name="vipal", aliases=["vipsil"], usage="@kişi")
     @commands.has_permissions(manage_roles=True)
@@ -470,8 +480,8 @@ class V20(commands.Cog):
         avantaj += [
             f"🎨 `ciz`: yapay zekayla günde **{b['ciz']}** resim çiz",
             "✨ `viprol`: kendi adın ve renginle kişisel rol",
-            "💬 VIP'lere özel sohbet kanalı (`vipkanal` ile açılır)",
-            "🌍 Ülke Topları: günlük bedava `vipball` ve daha iyi bonuslar",
+            "💬 VIP'lere özel yazı ve ses kanalı (`vipkanal` / `vipkanal ses`)",
+            "⚡ Yapay zekada (`ai`) daha kısa bekleme, 'sa' yazınca bot sana kademe simgesiyle cevap verir",
             "👑 Özel VIP rolü",
         ]
         if aktif and k < max(KADEMELER):
@@ -549,34 +559,41 @@ class V20(commands.Cog):
         isaretle20()
         await ctx.send(f"✨ Kişisel rolün hazır: {rol.mention}", allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(with_app_command=False, name="vipkanal")
+    @commands.hybrid_command(with_app_command=False, name="vipkanal", usage="[ses]")
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
-    async def vipkanal(self, ctx):
-        """Sadece VIP'lerin görebildiği sohbet kanalı aç"""
+    async def vipkanal(self, ctx, tur: str = "yazi"):
+        """Sadece VIP'lerin görebildiği yazı kanalı aç (`vipkanal ses` yazarsan ses kanalı)"""
         rol = self.vip_rol(ctx.guild)
         if rol is None:
             return await ctx.send("❌ Önce `td!vipkur` ile VIP rolünü ayarla.")
+        ses = tur.lower() in ("ses", "voice", "sesli")
+        anahtar = "ses" if ses else "kanal"
         ayar = veri["sunucu"].setdefault(str(ctx.guild.id), {})
-        mevcut = ctx.guild.get_channel(ayar.get("kanal", 0))
+        mevcut = ctx.guild.get_channel(ayar.get(anahtar, 0))
         if mevcut is not None:
-            return await ctx.send(f"ℹ️ VIP kanalı zaten var: {mevcut.mention}")
+            return await ctx.send(f"ℹ️ VIP {'ses ' if ses else ''}kanalı zaten var: {mevcut.mention}")
         await ctx.defer()
         izinler = {
             ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            rol: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            rol: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
+                                             connect=True, speak=True),
+            ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True),
         }
         try:
-            kanal = await ctx.guild.create_text_channel(
-                "👑┃vip-sohbet", overwrites=izinler, topic="Sadece VIP'lere özel sohbet",
-                reason=f"{ctx.author} VIP kanalı açtı")
+            if ses:
+                kanal = await ctx.guild.create_voice_channel(
+                    "👑┃VIP Ses", overwrites=izinler, reason=f"{ctx.author} VIP ses kanalı açtı")
+            else:
+                kanal = await ctx.guild.create_text_channel(
+                    "👑┃vip-sohbet", overwrites=izinler, topic="Sadece VIP'lere özel sohbet",
+                    reason=f"{ctx.author} VIP kanalı açtı")
         except discord.HTTPException:
             return await ctx.send("❌ Kanal açılamadı.")
-        ayar["kanal"] = kanal.id
+        ayar[anahtar] = kanal.id
         isaretle20()
-        await ctx.send(f"✅ VIP kanalı açıldı: {kanal.mention}")
+        await ctx.send(f"✅ VIP {'ses ' if ses else ''}kanalı açıldı: {kanal.mention}")
 
     @commands.hybrid_command(with_app_command=False, name="ciz", aliases=["çiz", "draw"], usage="<ne çizilsin>")
     @app_commands.describe(tarif="Ne çizilsin? Ne kadar ayrıntılı yazarsan o kadar güzel olur")
