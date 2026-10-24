@@ -155,11 +155,12 @@ class Ses(commands.Cog):
             await self.oda_sil(before.channel, d)
 
     # ---------------- özel ses odaları ----------------
-    @commands.command(name="ozelsesayarla", aliases=["ozelses"])
+    @commands.hybrid_command(name="ozelsesayarla", aliases=["ozelses"])
     @commands.has_permissions(manage_guild=True)
     @commands.bot_has_permissions(manage_channels=True, move_members=True)
     async def ozelsesayarla(self, ctx):
         """Özel ses odası sistemini kur (➕ Oda Aç kanalı)"""
+        await ctx.defer()
         d = ses_ayar(ctx.guild.id)
         try:
             kat = await ctx.guild.create_category("🔊 Özel Odalar", reason="Özel ses sistemi")
@@ -171,10 +172,11 @@ class Ses(commands.Cog):
         await ctx.send(f"✅ Hazır! {kanal.mention} kanalına giren herkese kendine ait bir ses odası açılır, "
                        f"oda boşalınca otomatik silinir.\nOda sahibi komutları: `odakilit` `odalimit` `odaisim`")
 
-    @commands.command(name="ozelsesbitir")
+    @commands.hybrid_command(name="ozelsesbitir")
     @commands.has_permissions(manage_guild=True)
     async def ozelsesbitir(self, ctx):
         """Özel ses odası sistemini kapat"""
+        await ctx.defer()
         d = ses_ayar(ctx.guild.id)
         kanal = ctx.guild.get_channel(d["olustur"]) if d["olustur"] else None
         d["olustur"] = None
