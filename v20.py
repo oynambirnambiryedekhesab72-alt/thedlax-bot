@@ -70,7 +70,7 @@ KADEMELER = {
 #   "gemini"   : senin Google anahtarın (kota/yetki yoksa otomatik atlanır)
 #   "ucretsiz" : pollinations.ai, anahtar gerektirmez (anonim kullanımda ~15 saniyede 1 istek)
 # Sadece ücretsizi kullanmak istersen: RESIM_SAGLAYICI = ("ucretsiz",)
-RESIM_SAGLAYICI = ("gemini", "ucretsiz")
+RESIM_SAGLAYICI = ("gemini", "cloudflare", "ucretsiz")
 GEMINI_KAPALI_SURE = 1800    # Gemini kota/yetki hatası verince kaç saniye hiç denenmesin
 UCRETSIZ_ARALIK = 16         # ücretsiz servise iki istek arası en az kaç saniye
 UCRETSIZ_URL = "https://image.pollinations.ai/prompt/"
@@ -79,6 +79,7 @@ gemini_kapali_bitis = 0.0
 _ucretsiz_kilit = threading.Lock()
 _ucretsiz_son = 0.0
 
+METIN_MODELLER = ["gemini-3.1-flash-lite", "gemini-3.6-flash"]   # kur() içinde main.py'deki AI_MODELLER ile değişir
 GEMINI_KEY = None            # kur() içinde main.py'den alınır (API koduna dokunulmaz)
 
 RENKLER = {
@@ -229,9 +230,68 @@ def resim_model(model, tarif):
         return None, type(e).__name__, repr(e)[:200]
 
 
+def ingilizce_tarif(tarif):
+    """Türkçe tarifi resim modelinin iyi anladığı ayrıntılı İngilizce tarife çevirir (ücretsiz servis Türkçe'yi
+    anlamadığı için resimler alakasız çıkıyordu). Olmazsa özgün tarifi döner. Ayrı thread'de çalışır."""
+    if not GEMINI_KEY:
+        return tarif
+    istek = (
+        "Translate the following image request into one clear English image-generation prompt. "
+        "Keep EVERY subject, number, color, place and detail exactly as asked, do not invent new subjects, "
+        "do not change the meaning. You may add short style words at the end (detailed, high quality, sharp focus). "
+        "Reply with ONLY the prompt, no quotes, no explanation.\n\nRequest: " + tarif
+    )
+    for model in METIN_MODELLER:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            payload = {"contents": [{"parts": [{"text": istek}]}], "generationConfig": {"maxOutputTokens": 300}}
+            req = urllib.request.Request(
+                url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json; charset=utf-8", "x-goog-api-key": GEMINI_KEY},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                sonuc = json.loads(r.read().decode("utf-8"))
+            parcalar = (sonuc.get("candidates") or [{}])[0].get("content", {}).get("parts") or []
+            metin = "".join(p.get("text", "") for p in parcalar).strip().strip('"')
+            if 3 <= len(metin) <= 900:
+                return metin
+        except Exception as e:
+            print(f"Tarif çevirisi hatası ({model}): {e!r}")
+    return tarif
+
+
+def resim_cloudflare(tarif):
+    """Cloudflare Workers AI (FLUX.1 schnell, günde ~200 ücretsiz resim). Ortam değişkenleri:
+    CF_ACCOUNT_ID ve CF_API_TOKEN. Ayrı thread'de çalışır. (bayt, hata_kodu, detay) döner."""
+    hesap = os.getenv("CF_ACCOUNT_ID", "").strip()
+    token = os.getenv("CF_API_TOKEN", "").strip()
+    if not hesap or not token:
+        return None, "cf_anahtar", "CF_ACCOUNT_ID / CF_API_TOKEN yok"
+    try:
+        url = f"https://api.cloudflare.com/client/v4/accounts/{hesap}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+        payload = {"prompt": ingilizce_tarif(tarif), "steps": 6}
+        req = urllib.request.Request(
+            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as r:
+            sonuc = json.loads(r.read().decode("utf-8"))
+        veri_b64 = (sonuc.get("result") or {}).get("image")
+        if veri_b64:
+            return base64.b64decode(veri_b64), "", ""
+        return None, "cf_hata", str(sonuc.get("errors"))[:200]
+    except urllib.error.HTTPError as e:
+        govde = e.read().decode("utf-8", errors="ignore")
+        print(f"Cloudflare resim hatası HTTP {e.code}: {govde[:300]}")
+        return None, ("cf_kota" if e.code in (429, 403) else "cf_hata"), f"HTTP {e.code}"
+    except Exception as e:
+        print(f"Cloudflare resim hatası: {e!r}")
+        return None, "cf_hata", repr(e)[:200]
+
+
 def resim_ucretsiz(tarif):
     """pollinations.ai'den resim alır (ayrı thread'de çalışır). (bayt, hata_kodu, detay) döner."""
     global _ucretsiz_son
+    tarif = ingilizce_tarif(tarif)
     with _ucretsiz_kilit:                      # servis anonim kullanımda sıkı sınırlı: istekleri sıraya diz
         bekle = UCRETSIZ_ARALIK - (time.time() - _ucretsiz_son)
         if bekle > 0:
@@ -258,25 +318,30 @@ def resim_ucretsiz(tarif):
 
 
 def resim_uret(tarif):
-    """Sağlayıcıları sırayla dener. (resim_bayt, hata_kodu) döner."""
+    """Sağlayıcıları sırayla dener. (resim_bayt, hata_kodu, saglayici) döner."""
     global gemini_kapali_bitis
     son = "bilinmiyor"
     if "gemini" in RESIM_SAGLAYICI and GEMINI_KEY and time.time() >= gemini_kapali_bitis:
         for model in RESIM_MODELLER:
             bayt, kod, _ = resim_model(model, tarif)
             if bayt:
-                return bayt, ""
+                return bayt, "", "Gemini"
             if kod == "engel":
-                return None, "engel"           # güvenlik filtresine takıldı, başka yerde denemeyelim
+                return None, "engel", ""       # güvenlik filtresine takıldı, başka yerde denemeyelim
             if kod in ("kota", "yetki", "anahtar"):
                 gemini_kapali_bitis = time.time() + GEMINI_KAPALI_SURE   # bir süre Gemini'yi hiç deneme
                 son = kod
                 break
             son = kod
+    if "cloudflare" in RESIM_SAGLAYICI and os.getenv("CF_ACCOUNT_ID") and os.getenv("CF_API_TOKEN"):
+        bayt, kod, _ = resim_cloudflare(tarif)
+        if bayt:
+            return bayt, "", "Cloudflare Flux"
+        son = kod
     if "ucretsiz" in RESIM_SAGLAYICI:
         bayt, kod, _ = resim_ucretsiz(tarif)
-        return (bayt, "") if bayt else (None, kod)
-    return None, son
+        return (bayt, "", "Flux") if bayt else (None, kod, "")
+    return None, son, ""
 
 
 def uzanti(bayt):
@@ -626,12 +691,12 @@ class V20(commands.Cog):
         await ctx.defer()
         durum = await ctx.send("🎨 Çiziyorum... (10-40 saniye sürebilir)")
         try:
-            bayt, hata = await asyncio.wait_for(asyncio.to_thread(resim_uret, tarif), CIZ_ZAMAN_ASIMI)
+            bayt, hata, saglayici = await asyncio.wait_for(asyncio.to_thread(resim_uret, tarif), CIZ_ZAMAN_ASIMI)
         except asyncio.TimeoutError:
-            bayt, hata = None, "zaman"
+            bayt, hata, saglayici = None, "zaman", ""
         except Exception as e:
             print(f"ciz hatası: {e!r}")
-            bayt, hata = None, type(e).__name__
+            bayt, hata, saglayici = None, type(e).__name__, ""
         if not bayt:
             kayit["adet"] = max(0, kayit["adet"] - 1)      # başarısız denemeler hakkından düşmez
             self.ciz_son.pop(ctx.author.id, None)
@@ -643,7 +708,7 @@ class V20(commands.Cog):
                 return await ctx.send(yazi)
         kalan_hak = limit - kayit["adet"]
         await ctx.send(
-            f"🎨 **{tarif[:200]}**\n_Yapay zeka ile çizildi • bugün {kalan_hak} hakkın kaldı_",
+            f"🎨 **{tarif[:200]}**\n_{saglayici} ile çizildi • bugün {kalan_hak} hakkın kaldı_",
             file=discord.File(io.BytesIO(bayt), filename=f"resim.{uzanti(bayt)}"),
             allowed_mentions=NO_PING)
         try:
@@ -741,8 +806,9 @@ class V20(commands.Cog):
 # Yükleme (main.py setup_hook içinden çağrılır)
 # ----------------------------------------------------------------------
 async def kur(bot, g):
-    global GEMINI_KEY
+    global GEMINI_KEY, METIN_MODELLER
     GEMINI_KEY = g.get("GEMINI_KEY")      # main.py'deki mevcut anahtar; API koduna dokunulmaz
+    METIN_MODELLER = list(g.get("AI_MODELLER") or METIN_MODELLER)
     yukle()
     cog = V20(bot, g)
     await bot.add_cog(cog)
