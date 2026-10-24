@@ -1223,42 +1223,158 @@ def yardim_sayfalari():
     return sayfalar
 
 
-def yardim_ana_embed(sayfalar):
+YARDIM_RENKLER = [0x5865F2, 0xEB459E, 0x57F287, 0xFEE75C, 0xED4245, 0x3498DB, 0x9B59B6, 0xE67E22, 0x1ABC9C, 0xF1C40F]
+YARDIM_YUKLEME = [
+    "▱▱▱▱▱▱▱▱▱▱ **%0**",
+    "▰▰▰▱▱▱▱▱▱▱ **%30**",
+    "▰▰▰▰▰▰▱▱▱▱ **%60**",
+    "▰▰▰▰▰▰▰▰▱▱ **%85**",
+    "▰▰▰▰▰▰▰▰▰▰ **%100**",
+]
+
+
+def yardim_bol(metin, sinir=1000):
+    """Uzun kategori metnini sayfalara böler (satır ortasından kesmez)."""
+    sayfalar, cur = [], ""
+    for satir in metin.split("\n"):
+        if cur and len(cur) + len(satir) + 1 > sinir:
+            sayfalar.append(cur)
+            cur = ""
+        cur += ("\n" if cur else "") + satir[:sinir]
+    if cur:
+        sayfalar.append(cur)
+    return sayfalar or ["(boş)"]
+
+
+def yardim_simge_ad(ad):
+    """'🎵 Müzik' -> ('🎵', 'Müzik'). Başta simge yoksa (None, ad)."""
+    ilk, _, geri = ad.partition(" ")
+    if geri and not any(c.isalnum() for c in ilk):
+        return ilk, geri
+    return None, ad
+
+
+def yardim_ana_embed(sayfalar, bot_kullanici=None):
+    satirlar = []
+    for ad in sayfalar:
+        simge, duz = yardim_simge_ad(ad)
+        satirlar.append(f"{simge or '▫️'} **{duz}**")
     embed = discord.Embed(
-        title=f"📖 THEDLAX v{SURUM} Komutları",
+        title=f"📖 THEDLAX v{SURUM} • Yardım Merkezi",
         description=(
-            "`/` yaz, komutlar gruplar halinde çıkar (örn. `/muzik cal`, `/ekonomi bakiye`, `/mod kick`). Ya da prefix: `td!` / `td/`\n"
-            "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Süre örnekleri: `30s` `5m` `2h` `1d`\n\n"
-            "**Aşağıdaki menüden bir kategori seç:**\n"
-            + "\n".join(f"• {ad}" for ad in sayfalar)
+            "Aşağıdaki menüden bir **kategori** seç, ◀ ▶ ile sayfaları gez.\n\n"
+            + "\n".join(satirlar)
         )[:4000],
         color=discord.Color.blurple(),
     )
+    embed.add_field(
+        name="⚡ Nasıl kullanılır?",
+        value=("• Slash: `/muzik` yaz → listeden **cal**, **gec**... seç\n"
+               "• Prefix: `td!cal despacito`\n"
+               "• Komutsuz: `despacito çal`, `kırmızı araba çiz`, `bakiyem ne kadar`"),
+        inline=False,
+    )
+    embed.add_field(name="📊 İstatistik", value=f"**{len(bot.commands)}** komut • **{len(sayfalar)}** kategori", inline=True)
+    embed.add_field(name="ℹ️ İpucu", value="`< >` zorunlu, `[ ]` isteğe bağlı\nSüre: `30s` `5m` `2h` `1d`", inline=True)
+    if bot_kullanici is not None:
+        embed.set_thumbnail(url=bot_kullanici.display_avatar.url)
     embed.set_footer(text="Yetki gereken komutlarda ilgili yetkin olmalı.")
     return embed
 
 
 class YardimSecim(discord.ui.Select):
     def __init__(self, sayfalar):
-        self.sayfalar = list(sayfalar.items())
-        super().__init__(
-            placeholder="📂 Kategori seç...",
-            options=[discord.SelectOption(label=ad[:100], value=str(i)) for i, (ad, _) in enumerate(self.sayfalar[:25])],
-        )
+        self.liste = list(sayfalar.items())
+        secenekler = []
+        for i, (ad, _) in enumerate(self.liste[:25]):
+            simge, duz = yardim_simge_ad(ad)
+            try:
+                secenekler.append(discord.SelectOption(label=duz[:100], value=str(i), emoji=simge))
+            except Exception:
+                secenekler.append(discord.SelectOption(label=ad[:100], value=str(i)))
+        super().__init__(placeholder="📂 Kategori seç...", options=secenekler, row=0)
 
     async def callback(self, interaction):
-        ad, metin = self.sayfalar[int(self.values[0])]
-        embed = discord.Embed(title=ad, description=metin[:4000], color=discord.Color.blurple())
-        embed.set_footer(text=f"THEDLAX v{SURUM}")
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        v = self.view
+        v.kat = int(self.values[0])
+        v.sayfa = 0
+        await v.goster(interaction, animasyon=True)
 
 
 class YardimView(discord.ui.View):
-    def __init__(self, yazar_id, sayfalar):
+    def __init__(self, yazar_id, sayfalar, bot_kullanici=None):
         super().__init__(timeout=180)
         self.yazar_id = yazar_id
+        self.sayfalar = sayfalar
+        self.bot_kullanici = bot_kullanici
+        self.liste = list(sayfalar.items())
+        self.parcalar = {}
+        self.kat = None       # None = ana sayfa
+        self.sayfa = 0
         self.mesaj = None
         self.add_item(YardimSecim(sayfalar))
+        self.butonlari_ayarla()
+
+    def parca(self, kat):
+        if kat not in self.parcalar:
+            self.parcalar[kat] = yardim_bol(self.liste[kat][1])
+        return self.parcalar[kat]
+
+    def butonlari_ayarla(self):
+        coklu = self.kat is not None and len(self.parca(self.kat)) > 1
+        self.geri.disabled = not (coklu and self.sayfa > 0)
+        self.ileri.disabled = not (coklu and self.sayfa < len(self.parca(self.kat)) - 1)
+        self.ana.disabled = self.kat is None
+
+    def embed_yap(self):
+        if self.kat is None:
+            return yardim_ana_embed(self.sayfalar, self.bot_kullanici)
+        ad, _ = self.liste[self.kat]
+        parcalar = self.parca(self.kat)
+        embed = discord.Embed(title=ad, description=parcalar[self.sayfa], color=YARDIM_RENKLER[self.kat % len(YARDIM_RENKLER)])
+        if self.bot_kullanici is not None:
+            embed.set_thumbnail(url=self.bot_kullanici.display_avatar.url)
+        embed.set_footer(text=f"Sayfa {self.sayfa + 1}/{len(parcalar)} • THEDLAX v{SURUM} • 🏠 ile ana sayfaya dön")
+        return embed
+
+    async def goster(self, interaction, animasyon=False):
+        self.butonlari_ayarla()
+        if animasyon:
+            # kısa geçiş animasyonu: önce yükleme çubuğu, sonra sayfa
+            renk = YARDIM_RENKLER[(self.kat or 0) % len(YARDIM_RENKLER)]
+            ad = self.liste[self.kat][0] if self.kat is not None else "Ana sayfa"
+            await interaction.response.edit_message(
+                embed=discord.Embed(title=ad, description=f"⏳ Yükleniyor...\n{YARDIM_YUKLEME[1]}", color=renk), view=self)
+            await asyncio.sleep(0.35)
+            await interaction.edit_original_response(
+                embed=discord.Embed(title=ad, description=f"⏳ Yükleniyor...\n{YARDIM_YUKLEME[3]}", color=renk), view=self)
+            await asyncio.sleep(0.35)
+            await interaction.edit_original_response(embed=self.embed_yap(), view=self)
+        else:
+            await interaction.response.edit_message(embed=self.embed_yap(), view=self)
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
+    async def geri(self, interaction, button):
+        self.sayfa = max(0, self.sayfa - 1)
+        await self.goster(interaction)
+
+    @discord.ui.button(emoji="🏠", label="Ana sayfa", style=discord.ButtonStyle.primary, row=1)
+    async def ana(self, interaction, button):
+        self.kat, self.sayfa = None, 0
+        await self.goster(interaction, animasyon=True)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
+    async def ileri(self, interaction, button):
+        self.sayfa += 1
+        await self.goster(interaction)
+
+    @discord.ui.button(emoji="✖️", style=discord.ButtonStyle.danger, row=1)
+    async def kapat(self, interaction, button):
+        self.stop()
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            await interaction.response.edit_message(view=None)
 
     async def interaction_check(self, interaction):
         if interaction.user.id == self.yazar_id:
@@ -1278,10 +1394,21 @@ class YardimView(discord.ui.View):
 
 @bot.hybrid_command(name="help", aliases=["yardim", "yardım", "komutlar"])
 async def help_komutu(ctx):
-    """Tüm komutları göster"""
+    """Tüm komutları göster (animasyonlu menü)"""
     sayfalar = yardim_sayfalari()
-    view = YardimView(ctx.author.id, sayfalar)
-    view.mesaj = await ctx.send(embed=yardim_ana_embed(sayfalar), view=view)
+    view = YardimView(ctx.author.id, sayfalar, bot.user)
+    # açılış animasyonu: yükleme çubuğu dolar, sonra menü açılır
+    yukleme = discord.Embed(title="📖 Yardım menüsü hazırlanıyor...", description=YARDIM_YUKLEME[0], color=discord.Color.blurple())
+    view.mesaj = await ctx.send(embed=yukleme)
+    try:
+        for kare in YARDIM_YUKLEME[1:]:
+            await asyncio.sleep(0.6)
+            yukleme.description = kare
+            await view.mesaj.edit(embed=yukleme)
+        await asyncio.sleep(0.4)
+        await view.mesaj.edit(embed=view.embed_yap(), view=view)
+    except discord.HTTPException:
+        view.mesaj = await ctx.send(embed=view.embed_yap(), view=view)
 
 
 # ----------------------------------------------------------------------
