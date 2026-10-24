@@ -33,6 +33,7 @@ import random
 import base64
 import asyncio
 import difflib
+import copy
 
 import aiohttp
 from typing import Optional
@@ -50,6 +51,50 @@ RE_KILIT = re.compile(r"\b(kilitle|kilitlesene|kilitler misin|kanali kapat|kanal
 CIZ_GEREKSIZ = {"ona", "bana", "bunu", "sunu", "onu", "icin", "bir", "lutfen", "hadi", "sen", "bot", "sana", "ya",
                 "ciz", "cizer", "misin", "cizsene", "cizebilir", "yap", "resmini", "resim", "resmi", "gorsel",
                 "olustur", "uret", "resmet", "bi", "de", "da", "bak", "su", "bu"}
+
+
+# ---- Komutsuz doğal dil (v2.1): her komut için ----
+# (regex, komut, ses kanalında olmak gerekir mi, en fazla kelime)
+NIYET_TABLO = [
+    (r"\b(sarkiyi gec|sonrakine gec|siradakine gec|sonraki sarki|bir sonraki sarki|atla|skip)\b", "gec", True, 6),
+    (r"\b(muzigi durdur|sarkiyi durdur|muzigi duraklat|sarkiyi duraklat|duraklat)\b", "durdur", True, 6),
+    (r"\b(muzige devam|sarkiya devam|devam ettir|muzigi devam ettir)\b", "devam", True, 6),
+    (r"\b(muzigi kapat|muzigi bitir|muzigi sonlandir|sesten cik|ses kanalindan cik|botu cikar)\b", "dur", True, 6),
+    (r"\b(kuyrugu karistir|sarkilari karistir)\b", "karistir", True, 6),
+    (r"\b(kuyrugu goster|siradaki sarkilar|sirada ne var|kuyruk)\b", "kuyruk", True, 6),
+    (r"\b(ne caliyor|hangi sarki caliyor|calan sarki|simdi ne caliyor)\b", "simdi", True, 6),
+    (r"\b(bakiyem|param ne kadar|kac param var|kac liram var|bakiyemi goster|kasamda ne kadar)\b", "bakiye", False, 8),
+    (r"\b(gunluk odul|gunlugumu al|gunluk para|gunluk al)\b", "gunluk", False, 6),
+    (r"\b(en zenginler|zenginler listesi|zengin siralamasi)\b", "zenginler", False, 6),
+    (r"\b(seviyem|kacinci seviyeyim|kac xpm|xp durumum)\b", "seviye", False, 6),
+    (r"\b(liderlik tablosu|xp siralamasi|en cok xp)\b", "siralama", False, 6),
+    (r"\b(vip durumum|vipim|vip bilgim)\b", "vip", False, 6),
+    (r"\b(ping|gecikmen kac|ping kac)\b", "ping", False, 4),
+    (r"\b(ne kadar suredir acik|uptime)\b", "uptime", False, 6),
+    (r"\b(sunucu bilgisi|sunucu bilgileri|sunucu hakkinda)\b", "serverinfo", False, 6),
+    (r"\b(komutlar neler|komut listesi|komutlari goster|neler yapabilirsin|yardim menusu)\b", "help", False, 6),
+    (r"\b(yazi mi tura mi|yazi tura|yazitura)\b", "yazitura", False, 6),
+    (r"\b(avatar|avatari|avatarim|avatarimi|profil fotom|profil fotosu)\b", "avatar", False, 4),
+    (r"\b(kullanici bilgisi|kullanici bilgileri|hesap bilgim)\b", "userinfo", False, 6),
+]
+NIYET_TABLO = [(re.compile(r), k, v, m) for r, k, v, m in NIYET_TABLO]
+CAL_GEREKSIZ = {"cal", "calsana", "calar", "misin", "calabilir", "calsin", "oynat", "bana", "bir", "lutfen", "hadi",
+                "sarki", "sarkisini", "sarkiyi", "sarkisi", "muzik", "muzigi", "bot", "su", "bu", "ya", "bi", "de",
+                "da", "ac", "acsana", "dinlemek", "istiyorum", "istiyom", "ver"}
+RE_CAL = re.compile(r"\b(cal|calsana|calar misin|calabilir misin|calsin|oynat|muzik ac|sarki ac)\b")
+RE_MENTION = re.compile(r"<@!?(\d+)>")
+RE_HESAP = re.compile(r"^\s*([\d\s\.\,\+\-\*/x×÷\(\)\^]+?)\s*(kac eder|kactir|kac yapar|=|\?)\s*$", re.I)
+RE_ZAR = re.compile(r"\bzar (at|atsana|atar misin)\b")
+RE_AFK = re.compile(r"^(afkyim|afk giriyorum|afk oluyorum|ben afk)\b")
+RE_SURE = re.compile(r"(\d+)\s*(dk|dakika|saat|sa|sn|saniye|gun|g)\b")
+RE_MOD = [
+    (re.compile(r"\b(banla|banlasana|yasakla|sunucudan yasakla)\b"), "ban"),
+    (re.compile(r"\b(kickle|kicklesene|sunucudan at|sunucudan kov)\b"), "kick"),
+    (re.compile(r"\b(susturmayi kaldir|susturmasini kaldir|susturmasini ac|unmute)\b"), "untimeout"),
+    (re.compile(r"\b(sustur|susturur musun|timeoutla|timeout at)\b"), "timeout"),
+    (re.compile(r"\b(uyar|uyarsana|uyari ver)\b"), "warn"),
+]
+RE_TEMIZLE = re.compile(r"\b(\d{1,3}) (mesaji|mesaj) (sil|temizle)\b")
 
 DOSYA = "veri_ai.json"
 
@@ -252,7 +297,7 @@ YARDIM = {
     "🧠 Yapay Zeka Eğitimi (v2.0)": [
         "💡 Komutsuz: botu etiketle ya da mesajına yanıt ver → `ona resim çiz` (VIP), `kanalı kilitle` / `kilidi aç` (Kanalları Yönet yetkisi gerekir)",
         "`ai <soru>` sohbet: görsel okur (resim ekle ya da resme cevap ver), bilmediğini webde arar, istersen uzun yazar",
-        "`sohbet [ac|kapat|kanal]` komutsuz sohbet: sa → as, selam → selam sana; `kanal` ile o kanalda sorulara da cevap verir (Sunucuyu Yönet)",
+        "`sohbet [ac|kapat|herkes|dogal|kanal]` komutsuz sohbet: sa → as, selam → selam sana; `kanal` ile o kanalda sorulara da cevap verir (Sunucuyu Yönet)",
         "`ogret <soru> | <cevap>` hazır cevap öğret, anında cevaplanır. `{isim}` yazarsan kişinin adı gelir (Sunucuyu Yönet)",
         "`ogret <bilgi>` bilgi öğret (`|` koymazsan), yapay zeka cevap verirken bunu bilir (Sunucuyu Yönet)",
         "`ogretilenler [sayfa]` öğretilenleri listele  •  `aisil S3` ya da `aisil B2` sil",
@@ -271,6 +316,7 @@ class HizliAI(commands.Cog):
         self.selam_kullanici = {}
         self.selam_kanal = {}
         self.soru_kanal = {}
+        self.niyet_kullanici = {}
 
     async def cog_unload(self):
         if self.session is not None and not self.session.closed:
@@ -533,8 +579,18 @@ class HizliAI(commands.Cog):
             await self.guvenli_cevap(mesaj, [cevap[:1900]])
             return
 
-        # 2) Soru cevaplama için açılmış kanallarda: soruya benzeyen mesajı yapay zeka cevaplar
-        if (mesaj.channel.id in d["kanallar"] and len(icerik) >= 6 and soru_mu(icerik, n)
+        # 1.5) Komutsuz doğal dil: "resim çiz", "despacito çal", "bakiyem ne kadar", "ping" ...
+        if d.get("dogal", True) and len(icerik) <= 200 and simdi - self.niyet_kullanici.get(uid, 0) >= 2:
+            try:
+                ctx = await self.bot.get_context(mesaj)
+                if await self.niyet_calistir(ctx, icerik, dogrudan=False):
+                    self.niyet_kullanici[uid] = simdi
+                    return
+            except Exception as e:
+                print(f"Doğal dil komutu hatası: {e!r}")
+
+        # 2) Soru cevaplama: varsayılan olarak HER kanalda soruya benzeyen mesajı yapay zeka cevaplar
+        if ((d.get("herkes", True) or mesaj.channel.id in d["kanallar"]) and len(icerik) >= 6 and soru_mu(icerik, n)
                 and simdi - self.soru_kanal.get(mesaj.channel.id, 0) >= SORU_KANAL_BEKLEME):
             self.soru_kanal[mesaj.channel.id] = simdi
             async with mesaj.channel.typing():
@@ -542,7 +598,7 @@ class HizliAI(commands.Cog):
             if cevap:
                 await self.guvenli_cevap(mesaj, parcala(cevap)[:3])
 
-    @commands.hybrid_command(name="sohbet", usage="[ac | kapat | kanal]")
+    @commands.hybrid_command(name="sohbet", usage="[ac | kapat | herkes | dogal | kanal]")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def sohbet(self, ctx, islem: str = None):
@@ -557,6 +613,16 @@ class HizliAI(commands.Cog):
             d["acik"] = False
             kaydet()
             return await ctx.send("🔕 Otomatik selamlaşma **kapatıldı**.")
+        if islem == "herkes":
+            d["herkes"] = not d.get("herkes", True)
+            kaydet()
+            return await ctx.send("✅ Her kanalda sorulara cevap verme **açıldı**." if d["herkes"]
+                                  else "🔕 Sorulara sadece `td!sohbet kanal` ile seçilen kanallarda cevap vereceğim.")
+        if islem == "dogal":
+            d["dogal"] = not d.get("dogal", True)
+            kaydet()
+            return await ctx.send("✅ Komutsuz komutlar (resim çiz, şarkı çal...) **açıldı**." if d["dogal"]
+                                  else "🔕 Komutsuz komutlar **kapatıldı**. (Etiketlersen yine anlarım.)")
         if islem == "kanal":
             if ctx.channel.id in d["kanallar"]:
                 d["kanallar"].remove(ctx.channel.id)
@@ -569,7 +635,9 @@ class HizliAI(commands.Cog):
         await ctx.send(
             "💬 **Otomatik sohbet**\n"
             f"• Selamlaşma (sa → as, selam → selam sana): **{'açık' if d['acik'] else 'kapalı'}**\n"
-            f"• Sorulara kendiliğinden cevap verilen kanallar: {kanallar}\n"
+            f"• Her kanalda soru cevaplama: **{'açık' if d.get('herkes', True) else 'kapalı'}** (`td!sohbet herkes`)\n"
+            f"• Komutsuz komutlar (resim çiz, şarkı çal...): **{'açık' if d.get('dogal', True) else 'kapalı'}** (`td!sohbet dogal`)\n"
+            f"• Sadece şu kanallarda cevap (herkes kapalıysa): {kanallar}\n"
             "Komutlar: `td!sohbet ac`, `td!sohbet kapat`, `td!sohbet kanal` (bulunduğun kanalı ekler/çıkarır).\n"
             "Yeni tetikleyici öğretmek için: `td!ogret sa | as` (mesaj birebir aynı yazılırsa cevap verir).",
             allowed_mentions=NO_PING)
@@ -642,7 +710,7 @@ class HizliAI(commands.Cog):
             else:
                 await ctx.send(parca, allowed_mentions=NO_PING)
 
-    async def niyet_calistir(self, ctx, soru):
+    async def niyet_calistir(self, ctx, soru, dogrudan=True):
         """Komut yazmadan istenen işleri yapar. Bir şey yaptıysa True döner.
         - "ona resim çiz", "kedi çiz" -> çiz komutu (VIP kuralları aynen geçerli)
         - "kanalı kilitle" / "kilidi aç" -> sadece Kanalları Yönet yetkisi olanlar için"""
@@ -669,7 +737,7 @@ class HizliAI(commands.Cog):
             return True
 
         # çizim
-        if RE_CIZ.search(n):
+        if RE_CIZ.search(n) and (dogrudan or len(n.split()) <= 12):
             komut = self.bot.get_command("ciz")
             if komut is None:
                 return False
@@ -697,6 +765,81 @@ class HizliAI(commands.Cog):
                 tarif = f"{tarif} ({hedef_kisi.display_name} için)"
             await ctx.invoke(komut, tarif=tarif)
             return True
+        return await self.komut_niyeti(ctx, soru, n, dogrudan)
+
+    async def komut_yap(self, ctx, komut, arg=""):
+        """Komutu `td!komut arg` yazılmış gibi çalıştırır (yetki, süre, argüman kontrolleri aynen geçerli)."""
+        if getattr(ctx, "interaction", None) is not None or ctx.message is None:
+            return False
+        if self.bot.get_command(komut) is None:
+            return False
+        sahte = copy.copy(ctx.message)
+        sahte.content = f"td!{komut} {arg}".strip()
+        yeni = await self.bot.get_context(sahte)
+        if yeni.command is None:
+            return False
+        await self.bot.invoke(yeni)
+        return True
+
+    async def komut_niyeti(self, ctx, soru, n, dogrudan):
+        """Mesajdan hangi komutun istendiğini anlar ve çalıştırır. Bir şey yaptıysa True döner.
+        dogrudan=False (etiketsiz sıradan mesaj) iken müzik komutları sadece ses kanalındakilere çalışır."""
+        if ctx.guild is None or not n:
+            return False
+        kelime_sayisi = len(n.split())
+        sesli = getattr(ctx.author, "voice", None) is not None and ctx.author.voice.channel is not None
+        mentionlar = [f"<@{m}>" for m in RE_MENTION.findall(soru)]
+
+        # müzik çal: "despacito çal", "çal sezen aksu", "bana bir şarkı çal tarkan"
+        if kelime_sayisi <= 12 and RE_CAL.search(n) and (dogrudan or sesli):
+            sarki = " ".join(k for k in soru.split() if norm(k) not in CAL_GEREKSIZ)
+            if len(sarki) >= 2:
+                return await self.komut_yap(ctx, "cal", sarki)
+
+        # hesap makinesi: "5*(3+2) kaç eder"
+        m = RE_HESAP.match(soru.lower().replace("kaç", "kac"))
+        if m and re.search(r"\d\s*[\+\-\*/x×÷\^]\s*[\d\(]", m.group(1)):
+            return await self.komut_yap(ctx, "hesapla", m.group(1).strip())
+
+        # zar
+        if kelime_sayisi <= 5 and RE_ZAR.search(n):
+            sayi = re.search(r"\b(\d{1,4})\b", n)
+            return await self.komut_yap(ctx, "zar", sayi.group(1) if sayi else "")
+
+        # afk
+        m = RE_AFK.match(n)
+        if m:
+            sebep = n[m.end():].strip()
+            return await self.komut_yap(ctx, "afk", sebep)
+
+        # moderasyon (etiketli kişi gerekir; yetkini komutun kendisi kontrol eder)
+        if mentionlar and kelime_sayisi <= 12:
+            for rx, komut in RE_MOD:
+                if rx.search(n):
+                    arg = mentionlar[0]
+                    if komut == "timeout":
+                        sure = RE_SURE.search(n)
+                        if sure:
+                            birim = {"dk": "m", "dakika": "m", "saat": "h", "sa": "h", "sn": "s", "saniye": "s",
+                                     "gun": "d", "g": "d"}[sure.group(2)]
+                            arg += f" {sure.group(1)}{birim}"
+                        else:
+                            arg += " 10m"
+                    return await self.komut_yap(ctx, komut, arg)
+
+        # mesaj sil: "20 mesaj sil"
+        m = RE_TEMIZLE.search(n)
+        if m and kelime_sayisi <= 5:
+            return await self.komut_yap(ctx, "temizle", m.group(1))
+
+        # kalan basit komutlar (tablo)
+        for rx, komut, ses_gerekli, en_fazla in NIYET_TABLO:
+            if kelime_sayisi <= en_fazla and rx.search(n):
+                if ses_gerekli and not dogrudan and not sesli:
+                    continue
+                if komut == "avatar" and mentionlar:
+                    return await self.komut_yap(ctx, komut, mentionlar[0])
+                return await self.komut_yap(ctx, komut, "")
         return False
 
     # ================= 🧠 Eğitim komutları =================
