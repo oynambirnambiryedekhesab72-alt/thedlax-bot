@@ -64,10 +64,10 @@ async def _get_context_turkce(message, *, cls=commands.Context):
 
 bot.get_context = _get_context_turkce
 
-# API Anahtarın
-p1 = "AQ.Ab8RN6I7iSnYkqzuoFQj"
-p2 = "LXS5N62GbgEWFRELbzQCuj5FCsechg"
-GEMINI_KEY = p1 + p2
+# API anahtarı koda YAZILMAZ. Sunucuda ortam değişkeni olarak tanımla:  GEMINI_KEY=anahtarin
+GEMINI_KEY = os.getenv("GEMINI_KEY", "").strip()
+if not GEMINI_KEY:
+    print("UYARI: GEMINI_KEY ortam değişkeni yok, yapay zeka ve çizim çalışmaz!")
 
 
 AI_MODELLER = ["gemini-3.1-flash-lite", "gemini-3.6-flash"]
@@ -398,7 +398,7 @@ async def setup_hook():
 bot.setup_hook = setup_hook
 
 
-@bot.hybrid_command(name="modul", aliases=["moduller"], with_app_command=False)
+@bot.hybrid_command(name="modul", aliases=["moduller"])
 @commands.has_permissions(manage_guild=True)
 async def modul(ctx):
     """Hangi modüllerin yüklendiğini göster (yetkili)"""
@@ -473,7 +473,7 @@ async def on_message_delete(message):
 # ----------------------------------------------------------------------
 # AI komutları
 # ----------------------------------------------------------------------
-@bot.hybrid_command(name="ai", with_app_command=False, usage="<soru>")
+@bot.hybrid_command(name="ai", usage="<soru>")
 @app_commands.describe(soru="Yapay zekaya sorun")
 async def ai(ctx, *, soru: str = None):
     """Yapay zekayla sohbet et (konuşmayı hatırlar)"""
@@ -486,7 +486,7 @@ async def ai(ctx, *, soru: str = None):
         await ctx.send(cevap[i:i + 1900], allowed_mentions=NO_PING)
 
 
-@bot.hybrid_command(name="aisifirla", with_app_command=False, aliases=["aireset", "unut"])
+@bot.hybrid_command(name="aisifirla", aliases=["aireset", "unut"])
 async def aisifirla(ctx):
     """Yapay zekanın seninle olan sohbet hafızasını temizle"""
     ai_gecmis.pop((ctx.channel.id, ctx.author.id), None)
@@ -496,7 +496,7 @@ async def aisifirla(ctx):
 # ----------------------------------------------------------------------
 # AFK
 # ----------------------------------------------------------------------
-@bot.hybrid_command(name="afk", with_app_command=False, usage="[sebep]")
+@bot.hybrid_command(name="afk", usage="[sebep]")
 @app_commands.describe(sebep="AFK sebebin")
 async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
     """AFK moduna geç"""
@@ -512,7 +512,7 @@ async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
 # ----------------------------------------------------------------------
 # Kanal yönetimi: yavaş mod, kilit, gizle
 # ----------------------------------------------------------------------
-@bot.hybrid_command(name="yavasmod", with_app_command=False, aliases=["yavaşmod", "slowmode"], usage="<süre> [#kanal]")
+@bot.hybrid_command(name="yavasmod", aliases=["yavaşmod", "slowmode"], usage="<süre> [#kanal]")
 @app_commands.describe(
     sure="Süre: 10, 30s, 5m, 1h (0 = kapat)",
     kanal="Hangi kanal (boş bırakırsan bu kanal)",
@@ -543,7 +543,7 @@ async def yavasmod_error(ctx, error):
         await ctx.send("Kullanım: `td!yavasmod <süre> [#kanal]` (kapatmak için `0`)")
 
 
-@bot.hybrid_command(name="lock", with_app_command=False, aliases=["kilitle"], usage="[#kanal]")
+@bot.hybrid_command(name="lock", aliases=["kilitle"], usage="[#kanal]")
 @app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
@@ -558,7 +558,7 @@ async def lock(ctx, kanal: discord.TextChannel = None):
     await ctx.send(f"🔒 {hedef.mention} kilitlendi. Kimse mesaj yazamaz.")
 
 
-@bot.hybrid_command(name="unlock", with_app_command=False, aliases=["kilitac", "kilitaç"], usage="[#kanal]")
+@bot.hybrid_command(name="unlock", aliases=["kilitac", "kilitaç"], usage="[#kanal]")
 @app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
@@ -582,7 +582,7 @@ async def kilit_error(ctx, error):
         await ctx.send("❌ Kanalı bulamadım. `#kanal` şeklinde etiketle.")
 
 
-@bot.hybrid_command(name="gizle", with_app_command=False, aliases=["hide"], usage="[#kanal]")
+@bot.hybrid_command(name="gizle", aliases=["hide"], usage="[#kanal]")
 @app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
@@ -596,7 +596,7 @@ async def gizle(ctx, kanal: discord.TextChannel = None):
     await ctx.send(f"🙈 {hedef.mention} herkesten gizlendi.")
 
 
-@bot.hybrid_command(name="goster", with_app_command=False, aliases=["göster", "show"], usage="[#kanal]")
+@bot.hybrid_command(name="goster", aliases=["göster", "show"], usage="[#kanal]")
 @app_commands.describe(kanal="Hangi kanal (boş bırakırsan bu kanal)")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
@@ -850,7 +850,7 @@ async def ping(ctx):
     await ctx.send(f"🏓 Pong! **{round(bot.latency * 1000)} ms**")
 
 
-@bot.hybrid_command(name="uptime", with_app_command=False, aliases=["calisma"])
+@bot.hybrid_command(name="uptime", aliases=["calisma"])
 async def uptime(ctx):
     """Bot ne kadardır açık"""
     await ctx.send(f"⏱️ Bot **{sure_yaz(time.time() - BASLANGIC)}** önce başladı.")
@@ -937,7 +937,7 @@ async def rolbilgi(ctx, rol: discord.Role):
     await ctx.send(embed=embed)
 
 
-@bot.hybrid_command(name="snipe", with_app_command=False, aliases=["sonsilinen"])
+@bot.hybrid_command(name="snipe", aliases=["sonsilinen"])
 async def snipe(ctx):
     """Kanalda en son silinen mesajı göster"""
     veri = silinenler.get(ctx.channel.id)
@@ -1023,7 +1023,7 @@ async def anket(ctx, *, metin: str):
             break
 
 
-@bot.hybrid_command(name="zar", with_app_command=False, aliases=["dice"], usage="[kaç yüzlü, varsayılan 6]")
+@bot.hybrid_command(name="zar", aliases=["dice"], usage="[kaç yüzlü, varsayılan 6]")
 @app_commands.describe(yuz="Zarın yüz sayısı (varsayılan 6)")
 async def zar(ctx, yuz: int = 6):
     """Zar at"""
@@ -1032,13 +1032,13 @@ async def zar(ctx, yuz: int = 6):
     await ctx.send(f"🎲 {ctx.author.mention} zar attı: **{random.randint(1, yuz)}** (1-{yuz})", allowed_mentions=NO_PING)
 
 
-@bot.hybrid_command(name="yazitura", with_app_command=False, aliases=["yazıtura", "coinflip"])
+@bot.hybrid_command(name="yazitura", aliases=["yazıtura", "coinflip"])
 async def yazitura(ctx):
     """Yazı tura at"""
     await ctx.send(f"🪙 **{random.choice(['Yazı', 'Tura'])}** geldi!")
 
 
-@bot.hybrid_command(name="sec", with_app_command=False, aliases=["seç", "choose"], usage="seçenek1 | seçenek2 | ...")
+@bot.hybrid_command(name="sec", aliases=["seç", "choose"], usage="seçenek1 | seçenek2 | ...")
 @app_commands.describe(secenekler="a | b | c şeklinde seçenekler")
 async def sec(ctx, *, secenekler: str):
     """Seçeneklerden birini rastgele seç"""
@@ -1048,7 +1048,7 @@ async def sec(ctx, *, secenekler: str):
     await ctx.send(f"🤔 Bence: **{random.choice(liste)[:500]}**", allowed_mentions=NO_PING)
 
 
-@bot.hybrid_command(name="sor", with_app_command=False, aliases=["8ball"], usage="<soru>")
+@bot.hybrid_command(name="sor", aliases=["8ball"], usage="<soru>")
 @app_commands.describe(soru="Sihirli 8 topa sorun")
 async def sor(ctx, *, soru: str):
     """Sihirli 8 topa soru sor"""
@@ -1226,7 +1226,7 @@ def yardim_ana_embed(sayfalar):
     embed = discord.Embed(
         title=f"📖 THEDLAX v{SURUM} Komutları",
         description=(
-            "`/` yaz, komutlar gruplar halinde çıkar (örn. `/muzik cal`, `/ekonomi bakiye`, `/mod kick`). Ya da prefix: `td!` / `td/` (bazı komutlar sadece prefix ile çalışır)\n"
+            "`/` yaz, komutlar gruplar halinde çıkar (örn. `/muzik cal`, `/ekonomi bakiye`, `/mod kick`). Ya da prefix: `td!` / `td/`\n"
             "`< >` zorunlu, `[ ]` isteğe bağlı bilgidir. Süre örnekleri: `30s` `5m` `2h` `1d`\n\n"
             "**Aşağıdaki menüden bir kategori seç:**\n"
             + "\n".join(f"• {ad}" for ad in sayfalar)
