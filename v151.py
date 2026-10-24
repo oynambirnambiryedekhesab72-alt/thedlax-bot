@@ -14,6 +14,7 @@ import os
 import re
 import json
 import time
+import shlex
 import shutil
 import random
 import asyncio
@@ -87,10 +88,50 @@ YDL_AYAR = {
     "noplaylist": True,
     "quiet": True,
     "no_warnings": True,
-    "socket_timeout": 15,
-    "retries": 3,
+    "socket_timeout": 12,
+    "retries": 2,
+    "extractor_retries": 1,
     "source_address": "0.0.0.0",
 }
+# YouTube veri merkezi IP'lerini engelliyor. Çözümler (hepsi isteğe bağlı, ortam değişkeni ile):
+#   YT_COOKIES = cookies.txt içeriği (Netscape biçimi)  ya da  bot klasörüne cookies.txt koy
+#   YT_PROXY   = http://kullanici:sifre@host:port   (ev/residential proxy, en kesin çözüm)
+# Ayrıca YouTube'a farklı "istemci" kimlikleriyle sırayla denenir; çalışan hatırlanır.
+YT_ISTEMCILER = [None, ["tv"], ["android_vr"], ["ios"], ["mweb"], ["web_safari"]]
+_iyi_istemci = [None]          # son çalışan istemcinin YT_ISTEMCILER sırası
+GUNCEL_DENENDI = [False]
+
+
+def _cerez_hazirla():
+    """YT_COOKIES ortam değişkenindeki çerezleri cookies.txt'ye yazar (dosya yoksa)."""
+    ham = os.getenv("YT_COOKIES", "").strip()
+    if ham and not os.path.exists("cookies.txt"):
+        try:
+            with open("cookies.txt", "w", encoding="utf-8") as f:
+                f.write(ham.replace("\\n", "\n") + "\n")
+        except Exception as e:
+            print(f"cookies.txt yazılamadı: {e!r}")
+
+
+def ytdlp_guncelle():
+    """Açılışta yt-dlp'yi arka planda günceller (YouTube sık değiştiği için eski sürüm çalışmaz)."""
+    if GUNCEL_DENENDI[0] or os.getenv("YTDLP_GUNCELLE", "1") == "0":
+        return
+    GUNCEL_DENENDI[0] = True
+
+    def is_():
+        import subprocess
+        import sys
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-U", "--quiet", "yt-dlp[default]"],
+                           timeout=240, capture_output=True)
+            print("yt-dlp güncelleme denemesi bitti (etkili olması için bot yeniden başlamalı).")
+        except Exception as e:
+            print(f"yt-dlp güncellenemedi: {e!r}")
+    import threading
+    threading.Thread(target=is_, daemon=True).start()
+
+
 FF_ONCE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 
 
@@ -151,24 +192,85 @@ def ilerleme(gecen, toplam, n=14):
     return "▬" * k + "🔘" + "▬" * (n - k - 1)
 
 
-def _cozumle(sorgu):
+def _ydl_ayar(istemci=None):
     ayar = dict(YDL_AYAR)
-    if os.path.exists("cookies.txt"):          # YouTube "bot değilim" engeli için (isteğe bağlı)
+    if os.path.exists("cookies.txt"):
         ayar["cookiefile"] = "cookies.txt"
+    proxy = os.getenv("YT_PROXY", "").strip()
+    if proxy:
+        ayar["proxy"] = proxy
+        ayar.pop("source_address", None)
+    if istemci:
+        ayar["extractor_args"] = {"youtube": {"player_client": list(istemci)}}
+    if shutil.which("deno") is None and shutil.which("node"):
+        ayar["js_runtimes"] = {"node": {}}          # YouTube imza çözümü için JS çalıştırıcı
+    return ayar
+
+
+def _bilgi_al(hedef, ayar):
+    with yt_dlp.YoutubeDL(ayar) as ydl:
+        return ydl.extract_info(hedef, download=False)
+
+
+def _youtube(hedef):
+    """YouTube'u farklı istemcilerle sırayla dener. Başarısız olursa son hatayı fırlatır."""
+    sira = list(range(len(YT_ISTEMCILER)))
+    if _iyi_istemci[0] in sira:                        # önce en son çalışan
+        sira.remove(_iyi_istemci[0])
+        sira.insert(0, _iyi_istemci[0])
+    son = None
+    for i in sira:
+        try:
+            b = _bilgi_al(hedef, _ydl_ayar(YT_ISTEMCILER[i]))
+            if b is not None and b.get("entries"):
+                b = next((e for e in b["entries"] if e), None)
+            if b is not None and b.get("url"):
+                _iyi_istemci[0] = i
+                return b
+            son = ValueError("Ses akışı bulunamadı")
+        except Exception as e:
+            son = e
+            mesaj = re.sub(r"\x1b\[[0-9;]*m", "", str(e))
+            print(f"YouTube istemci {YT_ISTEMCILER[i]} başarısız: {mesaj[:200]}")
+            if "Video unavailable" in mesaj or "Private video" in mesaj or "not available" in mesaj.lower():
+                break                                   # video yok, istemci değiştirmek fayda etmez
+    raise son if son else ValueError("YouTube sonuç vermedi")
+
+
+def _soundcloud(sorgu):
+    """SoundCloud'da arar; 30 sn'lik 'önizleme' parçalarını ve çok kısa sonuçları eler."""
+    b = _bilgi_al(f"scsearch8:{sorgu}", _ydl_ayar())
+    girisler = [e for e in (b.get("entries") or []) if e]
+    iyi = [e for e in girisler
+           if (e.get("duration") or 0) >= 90 and "preview" not in (e.get("url") or "").lower()
+           and "snipped" not in (e.get("title") or "").lower()]
+    sec = (iyi or girisler or [None])[0]
+    if sec is None:
+        raise ValueError("SoundCloud'da sonuç yok")
+    if not sec.get("url"):                              # arama sonucu düz olabilir, tam bilgiyi al
+        sec = _bilgi_al(sec.get("webpage_url") or sec.get("original_url"), _ydl_ayar())
+    return sec
+
+
+def _cozumle(sorgu):
+    _cerez_hazirla()
     link = bool(re.match(r"https?://", sorgu))
-
-    def cikar(hedef):
-        with yt_dlp.YoutubeDL(ayar) as ydl:
-            return ydl.extract_info(hedef, download=False)
-
+    b = None
     if link:
-        b = cikar(sorgu)
+        if "soundcloud.com" in sorgu:
+            b = _bilgi_al(sorgu, _ydl_ayar())
+        else:
+            b = _youtube(sorgu) if re.search(r"youtu\.?be", sorgu) else _bilgi_al(sorgu, _ydl_ayar())
     else:
         try:
-            b = cikar(f"ytsearch1:{sorgu}")
-        except Exception as e:      # YouTube engelledi ya da hata verdi -> SoundCloud'u dene
-            print(f"YouTube araması başarısız, SoundCloud deneniyor: {str(e)[:300]}")
-            b = cikar(f"scsearch1:{sorgu}")
+            b = _youtube(f"ytsearch1:{sorgu}")
+        except Exception as e:                           # YouTube olmadı -> SoundCloud (önizlemeleri eleyerek)
+            print(f"YouTube araması başarısız, SoundCloud deneniyor: {str(e)[:200]}")
+            try:
+                b = _soundcloud(sorgu)
+                b["_yt_hata"] = str(e)
+            except Exception as e2:
+                raise RuntimeError(f"YouTube: {str(e)[:150]} | SoundCloud: {str(e2)[:100]}")
     if b is not None and b.get("entries"):
         b = next((e for e in b["entries"] if e), None)
     if b is None:
@@ -183,16 +285,17 @@ def _cozumle(sorgu):
         "canli": bool(b.get("is_live")),
         "kucuk": b.get("thumbnail"),
         "stream": stream,
+        "basliklar": b.get("http_headers") or {},
     }
 
 
 async def cozumle(sorgu):
     dongu = asyncio.get_running_loop()
-    return await asyncio.wait_for(dongu.run_in_executor(None, _cozumle, sorgu), timeout=45)
+    return await asyncio.wait_for(dongu.run_in_executor(None, _cozumle, sorgu), timeout=90)
 
 
 class Sarki:
-    __slots__ = ("baslik", "sayfa", "sure", "kucuk", "ekleyen", "stream", "stream_zaman")
+    __slots__ = ("baslik", "sayfa", "sure", "kucuk", "ekleyen", "stream", "stream_zaman", "basliklar")
 
     def __init__(self, bilgi, ekleyen):
         self.baslik = bilgi["baslik"]
@@ -200,6 +303,7 @@ class Sarki:
         self.sure = bilgi["sure"]
         self.kucuk = bilgi["kucuk"]
         self.stream = bilgi["stream"]
+        self.basliklar = bilgi.get("basliklar") or {}
         self.stream_zaman = time.time()
         self.ekleyen = ekleyen
 
@@ -372,9 +476,16 @@ class Oynatici:
         if not s.stream or time.time() - s.stream_zaman > 300:   # akış linkleri süresi dolar, yenile
             bilgi = await cozumle(s.sayfa)
             s.stream = bilgi["stream"]
+            s.basliklar = bilgi.get("basliklar") or {}
             s.stream_zaman = time.time()
+        once = FF_ONCE
+        if s.basliklar:                                          # bazı akışlar tarayıcı başlığı ister
+            ham = "".join(f"{k}: {v}\r\n" for k, v in s.basliklar.items()
+                          if k.lower() in ("user-agent", "referer", "origin", "accept-language"))
+            if ham:
+                once += " -headers " + shlex.quote(ham)
         src = discord.FFmpegPCMAudio(
-            s.stream, executable=ffmpeg_yolu(), before_options=FF_ONCE, options="-vn")
+            s.stream, executable=ffmpeg_yolu(), before_options=once, options="-vn")
         return discord.PCMVolumeTransformer(src, volume=self.ses)
 
     def bitti(self, hata):
@@ -479,6 +590,7 @@ YARDIM = {
         "`dongu [kapali/sarki/kuyruk]` Döngü modu",
         "`karistir` Kuyruğu karıştır",
         "`kuyrukcikar <sıra>` Kuyruktan şarkı çıkar",
+        "`muzikdurum` YouTube engeli var mı test et (Sunucuyu Yönet)",
         "Çalan şarkının mesajındaki butonlarla da yönetebilirsin ⏯️ ⏭️ 🔁 ⏹️",
     ],
     "✉️ DM": [
@@ -555,8 +667,11 @@ class V151(commands.Cog):
         except Exception as e:
             mesaj = re.sub(r"\x1b\[[0-9;]*m", "", str(e))
             print(f"Müzik arama hatası: {mesaj[:500]}")
-            if "Sign in to confirm" in mesaj:
-                return await ctx.send("❌ YouTube bu sunucuyu engelledi. Link yerine **şarkı adını** yaz (SoundCloud'dan arayacağım).")
+            if "Sign in to confirm" in mesaj or "not a bot" in mesaj or "YouTube:" in mesaj:
+                return await ctx.send(
+                    "❌ YouTube bu sunucunun IP'sini engelliyor ve SoundCloud'da da uygun sonuç çıkmadı.\n"
+                    "**Sahibi için çözüm:** bot klasörüne `cookies.txt` koy (ya da `YT_COOKIES` ortam değişkeni), "
+                    "ya da `YT_PROXY` ile proxy ver. Ayrıntı: `td!muzikdurum`")
             sebep = mesaj.replace("ERROR: ", "").replace("`", "'")[:180]
             return await ctx.send(f"❌ Şarkı açılamadı.\n`{sebep}`")
         if bilgi["canli"]:
@@ -750,6 +865,32 @@ class V151(commands.Cog):
         o.kuyruk = deque(liste)
         await ctx.send(f"🗑️ Çıkarıldı: **{discord.utils.escape_markdown(s.baslik)}**")
 
+    @commands.hybrid_command(name="muzikdurum", aliases=["muziktest"])
+    @commands.has_permissions(manage_guild=True)
+    @commands.guild_only()
+    async def muzikdurum(self, ctx):
+        """Müzik sisteminin durumunu ve YouTube engelini test et (yetkili)"""
+        await ctx.defer()
+        satir = []
+        try:
+            satir.append(f"yt-dlp sürümü: `{yt_dlp.version.__version__}`" if yt_dlp else "❌ yt-dlp yok")
+        except Exception:
+            satir.append("yt-dlp sürümü okunamadı")
+        satir.append(f"cookies.txt: {'✅ var' if os.path.exists('cookies.txt') or os.getenv('YT_COOKIES') else '❌ yok'}")
+        satir.append(f"YT_PROXY: {'✅ var' if os.getenv('YT_PROXY') else '❌ yok'}")
+        js = "deno" if shutil.which("deno") else ("node" if shutil.which("node") else None)
+        satir.append(f"JS çalıştırıcı (deno/node): {'✅ ' + js if js else '❌ yok (YouTube için kurman iyi olur)'}")
+        hata = muzik_hata()
+        satir.append(f"ffmpeg/opus/PyNaCl: {'✅ tamam' if not hata else hata}")
+        t0 = time.perf_counter()
+        try:
+            await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, _youtube, "ytsearch1:test"), 80)
+            satir.append(f"YouTube: ✅ çalışıyor ({time.perf_counter() - t0:.1f} sn, istemci: {YT_ISTEMCILER[_iyi_istemci[0] or 0] or 'varsayılan'})")
+        except Exception as e:
+            m = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("`", "'")[:200]
+            satir.append(f"YouTube: ❌ {m}")
+        await ctx.send("🎵 **Müzik durumu**\n" + "\n".join(satir))
+
     # ---- Müzik olayları: kanalda kimse kalmazsa / bot atılırsa ----
     @commands.Cog.listener()
     async def on_voice_state_update(self, uye, before, after):
@@ -905,7 +1046,7 @@ class V151(commands.Cog):
         e.set_image(url=url)
         await ctx.send(embed=e)
 
-    @commands.hybrid_command(name="askolcer", with_app_command=False, aliases=["aşkölçer", "ask", "love"], usage="@kişi")
+    @commands.hybrid_command(name="askolcer", aliases=["aşkölçer", "ask", "love"], usage="@kişi")
     @commands.guild_only()
     async def askolcer(self, ctx, uye: discord.Member):
         """İki kişi arasındaki aşkı ölç 💘"""
@@ -929,14 +1070,14 @@ class V151(commands.Cog):
             color=discord.Color.from_rgb(255, 105, 180))
         await ctx.send(embed=e, allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="tersyaz", with_app_command=False, aliases=["ters", "reverse"], usage="<metin>")
+    @commands.hybrid_command(name="tersyaz", aliases=["ters", "reverse"], usage="<metin>")
     async def tersyaz(self, ctx, *, metin: str):
         """Yazıyı tersten yaz"""
         if len(metin) > 1000:
             return await ctx.send("❌ En fazla 1000 karakter.")
         await ctx.send(f"🔄 {metin[::-1]}", allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="kanalbilgi", with_app_command=False, aliases=["channelinfo", "kanal"], usage="[#kanal]")
+    @commands.hybrid_command(name="kanalbilgi", aliases=["channelinfo", "kanal"], usage="[#kanal]")
     @commands.guild_only()
     async def kanalbilgi(self, ctx, kanal: Union[discord.TextChannel, discord.VoiceChannel] = None):
         """Kanal bilgisini göster"""
@@ -981,6 +1122,7 @@ class V151(commands.Cog):
 # ----------------------------------------------------------------------
 async def kur(bot, g):
     veri_yukle()
+    ytdlp_guncelle()
     opus_hazirla()
     hata = muzik_hata()
     if hata:
