@@ -22,6 +22,7 @@ import asyncio
 import datetime
 from datetime import timedelta, timezone
 
+from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -401,7 +402,7 @@ class V18(commands.Cog):
         eko_ekle(ctx.guild.id, ctx.author.id, -fiyat)
         await ctx.send(f"✅ {rol.mention} rolünü **{para(fiyat)} 🪙** karşılığında aldın!", allowed_mentions=NO_PING)
 
-    @commands.command(name="marketekle", usage="@rol <fiyat>")
+    @commands.hybrid_command(name="marketekle", usage="@rol <fiyat>")
     @commands.has_permissions(manage_roles=True)
     @commands.guild_only()
     async def marketekle(self, ctx, rol: discord.Role, fiyat: int):
@@ -421,7 +422,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send(f"✅ {rol.mention} markete eklendi: **{para(fiyat)} 🪙**", allowed_mentions=NO_PING)
 
-    @commands.command(name="marketsil", usage="@rol")
+    @commands.hybrid_command(name="marketsil", usage="@rol")
     @commands.has_permissions(manage_roles=True)
     @commands.guild_only()
     async def marketsil(self, ctx, rol: discord.Role):
@@ -431,7 +432,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send(f"✅ {rol.mention} marketten çıkarıldı.", allowed_mentions=NO_PING)
 
-    @commands.command(name="soygun", aliases=["rob"], usage="@kişi")
+    @commands.hybrid_command(name="soygun", aliases=["rob"], usage="@kişi")
     @commands.guild_only()
     async def soygun(self, ctx, uye: discord.Member):
         """Birinin cüzdanından para çalmayı dene (yakalanırsan ceza ödersin)"""
@@ -463,7 +464,7 @@ class V18(commands.Cog):
             await ctx.send(f"🚔 Yakalandın! {uye.mention} kişisine **{para(ceza)} 🪙** ceza ödedin.",
                            allowed_mentions=NO_PING)
 
-    @commands.command(name="banka", aliases=["bank"])
+    @commands.hybrid_command(name="banka", aliases=["bank"])
     @commands.guild_only()
     async def banka(self, ctx):
         """Banka hesabını göster (günlük %1 faiz)"""
@@ -476,7 +477,7 @@ class V18(commands.Cog):
         e.set_footer(text=f"`yatir <miktar>` / `bankacek <miktar>` • En fazla {para(BANKA_TAVAN)} 🪙 saklanır • Banka parası soyulamaz")
         await ctx.send(embed=e)
 
-    @commands.command(name="yatir", aliases=["deposit"], usage="<miktar|hepsi>")
+    @commands.hybrid_command(name="yatir", aliases=["deposit"], usage="<miktar|hepsi>")
     @commands.guild_only()
     async def yatir(self, ctx, miktar: str):
         """Bankaya para yatır"""
@@ -494,7 +495,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send(f"🏦 **{para(m)} 🪙** yatırıldı. Bankadaki paran: **{para(b['para'])} 🪙**")
 
-    @commands.command(name="bankacek", aliases=["withdraw"], usage="<miktar|hepsi>")
+    @commands.hybrid_command(name="bankacek", aliases=["withdraw"], usage="<miktar|hepsi>")
     @commands.guild_only()
     async def bankacek(self, ctx, miktar: str):
         """Bankadan para çek"""
@@ -583,7 +584,7 @@ class V18(commands.Cog):
         await log(guild, "🔒 Sunucu kilitlendi", f"{kisi.mention} **{sayi}** kanalı kilitledi.", discord.Color.red())
         return f"🔒 **{sayi}** kanal kilitlendi. Açmak için `td!kilitkaldir`."
 
-    @commands.command(name="kilitherkes", aliases=["lockdown"])
+    @commands.hybrid_command(name="kilitherkes", aliases=["lockdown"])
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
@@ -592,7 +593,7 @@ class V18(commands.Cog):
         await ctx.send("⚠️ **Tüm yazı kanalları** herkese kapatılacak. Emin misin?",
                        view=KilitOnay(self, ctx.author.id))
 
-    @commands.command(name="kilitkaldir", aliases=["unlockdown"])
+    @commands.hybrid_command(name="kilitkaldir", aliases=["unlockdown"])
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
@@ -621,15 +622,19 @@ class V18(commands.Cog):
         await log(ctx.guild, "🔓 Kilit kaldırıldı", f"{ctx.author.mention} **{sayi}** kanalı açtı.", discord.Color.green())
         await ctx.send(f"🔓 **{sayi}** kanal tekrar açıldı.")
 
-    @commands.command(name="toplurolver", aliases=["rolleriver"], usage="@kişi @rol1 @rol2 ...")
+    @commands.hybrid_command(name="toplurolver", aliases=["rolleriver"], usage="@kişi @rol1 [@rol2 ... @rol5]")
     @commands.has_permissions(manage_roles=True)
     @commands.bot_has_permissions(manage_roles=True)
     @commands.guild_only()
-    async def toplurolver(self, ctx, uye: discord.Member, roller: commands.Greedy[discord.Role]):
+    async def toplurolver(self, ctx, uye: discord.Member, rol1: discord.Role, rol2: Optional[discord.Role] = None,
+                          rol3: Optional[discord.Role] = None, rol4: Optional[discord.Role] = None,
+                          rol5: Optional[discord.Role] = None):
         """Birine birden fazla rol ver"""
-        if not roller:
-            return await ctx.send("Kullanım: `td!toplurolver @kişi @rol1 @rol2 ...`")
-        roller = roller[:10]
+        roller = []
+        for r in (rol1, rol2, rol3, rol4, rol5):
+            if r is not None and r not in roller:
+                roller.append(r)
+        await ctx.defer()
         for r in roller:
             if r.managed or r.is_default() or r >= ctx.guild.me.top_role or (
                     ctx.author.id != ctx.guild.owner_id and r >= ctx.author.top_role):
@@ -662,12 +667,13 @@ class V18(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-    @commands.command(name="istatistikkanal", aliases=["istatistikkur"])
+    @commands.hybrid_command(name="istatistikkanal", aliases=["istatistikkur"])
     @commands.has_permissions(manage_guild=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
     async def istatistikkanal(self, ctx):
         """Üye sayısını gösteren istatistik kanalları kur"""
+        await ctx.defer()
         s = sv(ctx.guild.id)["istatistik"]
         if s["kanallar"]:
             return await ctx.send("ℹ️ İstatistik kanalları zaten kurulu. Kaldırmak için `td!istatistikkapat`.")
@@ -687,11 +693,12 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send("✅ İstatistik kanalları kuruldu. Sayılar 10 dakikada bir güncellenir.")
 
-    @commands.command(name="istatistikkapat")
+    @commands.hybrid_command(name="istatistikkapat")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def istatistikkapat(self, ctx):
         """İstatistik kanallarını sil"""
+        await ctx.defer()
         s = sv(ctx.guild.id)["istatistik"]
         for cid in list(s["kanallar"].values()) + ([s["kategori"]] if s["kategori"] else []):
             k = ctx.guild.get_channel(cid)
@@ -705,7 +712,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send("✅ İstatistik kanalları silindi.")
 
-    @commands.command(name="onerikanal", usage="#kanal")
+    @commands.hybrid_command(name="onerikanal", usage="#kanal")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def onerikanal(self, ctx, kanal: discord.TextChannel):
@@ -785,14 +792,14 @@ class V18(commands.Cog):
             return await ctx.send("❌ Öneri güncellenemedi.")
         await ctx.send(f"{durum}: öneri #{o['no']}")
 
-    @commands.command(name="onerionay", usage="<mesaj ID> [not]")
+    @commands.hybrid_command(name="onerionay", usage="<mesaj ID> [not]")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def onerionay(self, ctx, mesaj_id: str, *, not_: str = ""):
         """Öneriyi onayla"""
         await self.oneri_karar(ctx, mesaj_id, True, not_)
 
-    @commands.command(name="onerired", usage="<mesaj ID> [not]")
+    @commands.hybrid_command(name="onerired", usage="<mesaj ID> [not]")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def onerired(self, ctx, mesaj_id: str, *, not_: str = ""):
@@ -800,7 +807,7 @@ class V18(commands.Cog):
         await self.oneri_karar(ctx, mesaj_id, False, not_)
 
     # ---- Özel komutlar ----
-    @commands.command(name="ozelkomutekle", usage="<ad> <cevap>")
+    @commands.hybrid_command(name="ozelkomutekle", usage="<ad> <cevap>")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def ozelkomutekle(self, ctx, ad: str, *, cevap: str):
@@ -817,7 +824,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send(f"✅ Özel komut eklendi: `td!{ad}`")
 
-    @commands.command(name="ozelkomutsil", usage="<ad>")
+    @commands.hybrid_command(name="ozelkomutsil", usage="<ad>")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def ozelkomutsil(self, ctx, ad: str):
@@ -827,7 +834,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send("✅ Özel komut silindi.")
 
-    @commands.command(name="ozelkomutlar", aliases=["ozelkomutliste"])
+    @commands.hybrid_command(name="ozelkomutlar", aliases=["ozelkomutliste"])
     @commands.guild_only()
     async def ozelkomutlar(self, ctx):
         """Özel komutları listele"""
@@ -964,12 +971,13 @@ class V18(commands.Cog):
             return var
         return await ctx.guild.create_text_channel(ad, reason=sebep)
 
-    @commands.command(name="quizkur", usage="[#kanal]")
+    @commands.hybrid_command(name="quizkur", usage="[#kanal]")
     @commands.has_permissions(manage_guild=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
     async def quizkur(self, ctx, kanal: discord.TextChannel = None):
         """Günlük soru kanalını kur"""
+        await ctx.defer()
         try:
             kanal = await self.kanal_hazirla(ctx, kanal, "günün-sorusu", f"{ctx.author} quiz kurdu")
         except discord.HTTPException:
@@ -983,7 +991,7 @@ class V18(commands.Cog):
             f"Soru kaynağı: **{'yapay zeka' if q['kaynak'] == 'ai' else 'hazır liste'}**. "
             f"Şimdi denemek için `td!quizsor`.")
 
-    @commands.command(name="quizsaat", usage="<0-23>")
+    @commands.hybrid_command(name="quizsaat", usage="<0-23>")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def quizsaat(self, ctx, saat: int):
@@ -994,7 +1002,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send(f"✅ Günlük soru her gün **{saat:02d}:00** saatinde sorulacak.")
 
-    @commands.command(name="quizsor")
+    @commands.hybrid_command(name="quizsor")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def quizsor(self, ctx):
@@ -1006,7 +1014,7 @@ class V18(commands.Cog):
             ok = await self.quiz_sor(ctx.guild, q)
         await ctx.send("✅ Soru gönderildi." if ok else "❌ Soru gönderilemedi (kanal silinmiş ya da yetkim yok).")
 
-    @commands.command(name="quizkaynak", usage="ai/liste")
+    @commands.hybrid_command(name="quizkaynak", usage="ai/liste")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def quizkaynak(self, ctx, kaynak: str):
@@ -1020,7 +1028,7 @@ class V18(commands.Cog):
                        if kaynak == "ai" else
                        f"✅ Sorular artık **hazır listeden** gelecek ({len(SORU_LISTESI)} soru).")
 
-    @commands.command(name="quizkapat")
+    @commands.hybrid_command(name="quizkapat")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def quizkapat(self, ctx):
@@ -1051,12 +1059,13 @@ class V18(commands.Cog):
         isaretle18()
         return True
 
-    @commands.command(name="aktiflikkur", usage="[#kanal]")
+    @commands.hybrid_command(name="aktiflikkur", usage="[#kanal]")
     @commands.has_permissions(manage_guild=True)
     @commands.bot_has_permissions(manage_channels=True)
     @commands.guild_only()
     async def aktiflikkur(self, ctx, kanal: discord.TextChannel = None):
         """Saat başı 'aktif misiniz?' mesajını başlat"""
+        await ctx.defer()
         try:
             kanal = await self.kanal_hazirla(ctx, kanal, "aktiflik", f"{ctx.author} aktiflik kurdu")
         except discord.HTTPException:
@@ -1071,7 +1080,7 @@ class V18(commands.Cog):
             f"arası, Türkiye saati) yenisi atılır, eskisi silinir."
             + ("" if ok else "\n⚠️ İlk mesajı gönderemedim, kanalda yazma yetkim var mı?"))
 
-    @commands.command(name="aktiflikaralik", usage="<başlangıç> <bitiş>")
+    @commands.hybrid_command(name="aktiflikaralik", usage="<başlangıç> <bitiş>")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def aktiflikaralik(self, ctx, baslangic: int, bitis: int):
@@ -1083,11 +1092,12 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send(f"✅ Aktiflik mesajı **{baslangic:02d}:00 - {bitis:02d}:00** arası her saat başı atılacak.")
 
-    @commands.command(name="aktiflikkapat")
+    @commands.hybrid_command(name="aktiflikkapat")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def aktiflikkapat(self, ctx):
         """Saatlik aktiflik mesajını kapat"""
+        await ctx.defer()
         a = sv(ctx.guild.id)["aktiflik"]
         kanal = ctx.guild.get_channel(a["kanal"]) if a["kanal"] else None
         if kanal is not None and a["mesaj"]:
@@ -1101,7 +1111,7 @@ class V18(commands.Cog):
         isaretle18()
         await ctx.send("✅ Saatlik aktiflik mesajı kapatıldı.")
 
-    @commands.command(name="aktiflik", aliases=["aktiflikliste"])
+    @commands.hybrid_command(name="aktiflik", aliases=["aktiflikliste"])
     @commands.guild_only()
     async def aktiflik(self, ctx):
         """En çok 'aktifim' butonuna basanlar"""
