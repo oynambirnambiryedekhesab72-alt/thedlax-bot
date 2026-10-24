@@ -35,9 +35,21 @@ import asyncio
 import difflib
 
 import aiohttp
+from typing import Optional
 import discord
 from discord.ext import commands
 from v15 import NO_PING
+
+# Cevap verirken yazan kişiyi etiketle (yanıt olarak), başkalarını/rolleri/everyone'ı etiketleme
+YANIT_PING = discord.AllowedMentions(replied_user=True, users=False, roles=False, everyone=False)
+
+# ---- Komutsuz doğal dil: "ona resim çiz", "kanalı kilitle" ----
+RE_CIZ = re.compile(r"\b(ciz|cizer misin|cizsene|cizebilir misin|resmini yap|resim yap|resmi yap|gorsel (yap|olustur|uret)|resmet)\b")
+RE_KILIT_AC = re.compile(r"\b(kilidi(ni)? ac|kilit kaldir|kilidi kaldir|kanali ac|sohbeti ac|kilitten cikar)\b")
+RE_KILIT = re.compile(r"\b(kilitle|kilitlesene|kilitler misin|kanali kapat|kanali kapatir misin|sohbeti kapat)\b")
+CIZ_GEREKSIZ = {"ona", "bana", "bunu", "sunu", "onu", "icin", "bir", "lutfen", "hadi", "sen", "bot", "sana", "ya",
+                "ciz", "cizer", "misin", "cizsene", "cizebilir", "yap", "resmini", "resim", "resmi", "gorsel",
+                "olustur", "uret", "resmet", "bi", "de", "da", "bak", "su", "bu"}
 
 DOSYA = "veri_ai.json"
 
@@ -238,6 +250,7 @@ def parcala(metin, sinir=1900, en_fazla=8):
 
 YARDIM = {
     "🧠 Yapay Zeka Eğitimi (v2.0)": [
+        "💡 Komutsuz: botu etiketle ya da mesajına yanıt ver → `ona resim çiz` (VIP), `kanalı kilitle` / `kilidi aç` (Kanalları Yönet yetkisi gerekir)",
         "`ai <soru>` sohbet: görsel okur (resim ekle ya da resme cevap ver), bilmediğini webde arar, istersen uzun yazar",
         "`sohbet [ac|kapat|kanal]` komutsuz sohbet: sa → as, selam → selam sana; `kanal` ile o kanalda sorulara da cevap verir (Sunucuyu Yönet)",
         "`ogret <soru> | <cevap>` hazır cevap öğret, anında cevaplanır. `{isim}` yazarsan kişinin adı gelir (Sunucuyu Yönet)",
@@ -476,7 +489,7 @@ class HizliAI(commands.Cog):
         for i, p in enumerate(parcalar):
             try:
                 if i == 0:
-                    await mesaj.reply(p, mention_author=False, allowed_mentions=NO_PING)
+                    await mesaj.reply(p, mention_author=True, allowed_mentions=YANIT_PING)
                 else:
                     await mesaj.channel.send(p, allowed_mentions=NO_PING)
             except discord.HTTPException:
@@ -529,7 +542,7 @@ class HizliAI(commands.Cog):
             if cevap:
                 await self.guvenli_cevap(mesaj, parcala(cevap)[:3])
 
-    @commands.hybrid_command(name="sohbet", with_app_command=False, usage="[ac | kapat | kanal]")
+    @commands.hybrid_command(name="sohbet", usage="[ac | kapat | kanal]")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def sohbet(self, ctx, islem: str = None):
@@ -562,10 +575,13 @@ class HizliAI(commands.Cog):
             allowed_mentions=NO_PING)
 
     # ================= 💬 ai komutu (main.py'dekinin yerine: görsel okur) =================
-    async def resimleri_al(self, mesaj):
-        """Mesajdaki (ve cevap verilen mesajdaki) görselleri indirir. (resimler, atlanan_sayi) döner."""
-        adaylar = list(mesaj.attachments)
-        ref = mesaj.reference
+    async def resimleri_al(self, mesaj, ek=None):
+        """Mesajdaki (ve cevap verilen mesajdaki) görselleri indirir. (resimler, atlanan_sayi) döner.
+        mesaj None olabilir (slash); ek: slash'taki resim parametresi."""
+        adaylar = list(mesaj.attachments) if mesaj is not None else []
+        if ek is not None:
+            adaylar.append(ek)
+        ref = mesaj.reference if mesaj is not None else None
         if ref is not None and ref.message_id:
             hedef = ref.resolved if isinstance(ref.resolved, discord.Message) else None
             if hedef is None:
@@ -589,12 +605,13 @@ class HizliAI(commands.Cog):
                 atlanan += 1
         return resimler, atlanan
 
-    @commands.hybrid_command(name="ai", with_app_command=False, usage="<soru>  (resim de ekleyebilirsin)")
-    async def ai(self, ctx, *, soru: str = None):
+    @commands.hybrid_command(name="ai", usage="<soru>  (resim de ekleyebilirsin)")
+    async def ai(self, ctx, *, soru: str = None, resim: Optional[discord.Attachment] = None):
         """Yapay zekayla sohbet et: görsel okur, bilmediğini webde arar (konuşmayı hatırlar)"""
         resimler, atlanan = ([], 0)
-        if ctx.message is not None:
-            resimler, atlanan = await self.resimleri_al(ctx.message)
+        mesaj = ctx.message if getattr(ctx, "interaction", None) is None else None
+        if mesaj is not None or resim is not None:
+            resimler, atlanan = await self.resimleri_al(mesaj, resim)
         if atlanan:
             await ctx.send(f"🖼️ {atlanan} görseli okuyamadım (png, jpg ya da webp olmalı, en fazla {GORSEL_MAX_MB} MB, "
                            f"en fazla {GORSEL_MAX} tane).")
@@ -604,13 +621,86 @@ class HizliAI(commands.Cog):
             return
         if not soru:
             soru = "Bu görselde ne var? Yazı varsa oku, kısaca anlat."
+        if not resimler and await self.niyet_calistir(ctx, soru):
+            return
         async with ctx.typing():
             cevap = await self.ai_cevapla(ctx.author, ctx.channel.id, soru, resimler)
-        for parca in parcala(cevap):
-            await ctx.send(parca, allowed_mentions=NO_PING)
+        await self.yanitla(ctx, parcala(cevap))
+
+    async def yanitla(self, ctx, parcalar):
+        """Mesaja yanıt vererek ve yazan kişiyi etiketleyerek cevap verir (slash'ta normal gönderir)."""
+        mesaj = ctx.message if getattr(ctx, "interaction", None) is None else None
+        for i, parca in enumerate(parcalar):
+            if i == 0 and mesaj is not None:
+                try:
+                    await mesaj.reply(parca, mention_author=True, allowed_mentions=YANIT_PING)
+                    continue
+                except discord.HTTPException:
+                    pass                                      # asıl mesaj silinmiş olabilir
+            if i == 0:
+                await ctx.send(f"{ctx.author.mention} {parca}"[:2000], allowed_mentions=YANIT_PING)
+            else:
+                await ctx.send(parca, allowed_mentions=NO_PING)
+
+    async def niyet_calistir(self, ctx, soru):
+        """Komut yazmadan istenen işleri yapar. Bir şey yaptıysa True döner.
+        - "ona resim çiz", "kedi çiz" -> çiz komutu (VIP kuralları aynen geçerli)
+        - "kanalı kilitle" / "kilidi aç" -> sadece Kanalları Yönet yetkisi olanlar için"""
+        if ctx.guild is None or not soru:
+            return False
+        n = norm(soru)
+        kisa = len(n.split()) <= 8
+
+        # kilit: sadece kısa, net cümleler ("kanalı kilitle", "kilidi aç") ve yetkili kişi
+        if kisa and (RE_KILIT_AC.search(n) or RE_KILIT.search(n)):
+            ac = bool(RE_KILIT_AC.search(n))
+            if not ctx.author.guild_permissions.manage_channels:
+                await self.yanitla(ctx, ["❌ Kanalı kilitlemek/açmak için **Kanalları Yönet** yetkin olmalı."])
+                return True
+            komut = self.bot.get_command("unlock" if ac else "lock")
+            if komut is None:
+                return False
+            try:
+                await ctx.invoke(komut)
+            except discord.Forbidden:
+                await self.yanitla(ctx, ["❌ Benim **Kanalları Yönet** yetkim yok."])
+            except discord.HTTPException:
+                await self.yanitla(ctx, ["❌ Kanal ayarı değiştirilemedi."])
+            return True
+
+        # çizim
+        if RE_CIZ.search(n):
+            komut = self.bot.get_command("ciz")
+            if komut is None:
+                return False
+            tarif = " ".join(k for k in soru.split() if norm(k) and norm(k) not in CIZ_GEREKSIZ)
+            # "ona resim çiz" gibi konu söylenmediyse: yanıt verilen mesajın metnini/adını kullan
+            hedef_kisi = None
+            ref = ctx.message.reference if getattr(ctx, "interaction", None) is None else None
+            if ref is not None and ref.message_id:
+                hedef = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+                if hedef is None:
+                    try:
+                        hedef = await ctx.channel.fetch_message(ref.message_id)
+                    except discord.HTTPException:
+                        hedef = None
+                if hedef is not None:
+                    hedef_kisi = hedef.author
+                    if len(tarif) < 3 and hedef.content and not hedef.author.bot:
+                        tarif = hedef.content.strip()[:300]
+                    elif len(tarif) < 3 and not hedef.author.bot:
+                        tarif = f"{hedef.author.display_name} için sevimli, renkli bir illüstrasyon"
+            if len(tarif) < 3:
+                await self.yanitla(ctx, ["🎨 Ne çizeyim? Örn: `@bot kırmızı bir spor araba çiz`"])
+                return True
+            if hedef_kisi is not None and hedef_kisi.id != ctx.author.id and not hedef_kisi.bot:
+                tarif = f"{tarif} ({hedef_kisi.display_name} için)"
+            await ctx.invoke(komut, tarif=tarif)
+            return True
+        return False
 
     # ================= 🧠 Eğitim komutları =================
-    @commands.hybrid_command(name="ogret", aliases=["öğret", "aiegit"], with_app_command=False,
+    @commands.hybrid_command(name="ogret", aliases=["öğret", "aiegit"],
                              usage="<soru> | <cevap>   ya da   <bilgi>")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
@@ -645,7 +735,7 @@ class HizliAI(commands.Cog):
         kaydet()
         await ctx.send(f"✅ Öğrendim! **B{d['sayac']}**: artık cevap verirken bunu da bilirim.")
 
-    @commands.hybrid_command(name="ogretilenler", aliases=["öğretilenler", "aibilgiler"], with_app_command=False,
+    @commands.hybrid_command(name="ogretilenler", aliases=["öğretilenler", "aibilgiler"],
                              usage="[sayfa]")
     @commands.guild_only()
     async def ogretilenler(self, ctx, sayfa: int = 1):
@@ -661,7 +751,7 @@ class HizliAI(commands.Cog):
             f"🧠 **Öğretilenler** (S = soru-cevap, B = bilgi) • sayfa {sayfa}/{toplam}\n"
             + "\n".join(satirlar[(sayfa - 1) * 10:sayfa * 10]), allowed_mentions=NO_PING)
 
-    @commands.hybrid_command(name="aisil", with_app_command=False, usage="<S3 ya da B2>")
+    @commands.hybrid_command(name="aisil", usage="<S3 ya da B2>")
     @commands.has_permissions(manage_guild=True)
     @commands.guild_only()
     async def aisil(self, ctx, kod: str):
@@ -678,7 +768,7 @@ class HizliAI(commands.Cog):
                 return await ctx.send(f"🗑️ **{m.group(1)}{m.group(2)}** silindi.")
         await ctx.send("❌ Böyle bir kayıt yok.")
 
-    @commands.hybrid_command(name="aitest", with_app_command=False)
+    @commands.hybrid_command(name="aitest")
     @commands.has_permissions(manage_guild=True)
     async def aitest(self, ctx):
         """Yapay zeka modellerinin hızını ölç"""
