@@ -34,7 +34,22 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True   # giriş/çıkış logları için (Developer Portal'da Server Members Intent açık olmalı)
 PREFIXLER = ("td/", "td!")
+
+class SinirsizTree(app_commands.CommandTree):
+    """Modüller yüklenirken 100 slash sınırına takılıp modülün tamamen düşmesini engeller.
+    Fazla komutlar geçici olarak ağaca girer; v21_slash.py menülere toplayıp sayıyı 100'ün altına indirir."""
+
+    def add_command(self, command, /, **kwargs):
+        try:
+            return super().add_command(command, **kwargs)
+        except app_commands.CommandLimitReached:
+            if kwargs.get("guild") or kwargs.get("guilds"):
+                raise
+            self._global_commands[command.name] = command
+
+
 bot = commands.Bot(
+    tree_cls=SinirsizTree,
     command_prefix=list(PREFIXLER),
     intents=intents,
     help_command=None,
