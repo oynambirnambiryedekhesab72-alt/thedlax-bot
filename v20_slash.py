@@ -4,11 +4,11 @@ THEDLAX BOT v2.0 - Slash komut grupları
 
 Discord en fazla 100 slash komutuna izin verir. Bu modül mevcut komutları gruplara toplar:
 bir grup 1 hak harcar, içine 25'e kadar alt komut girer.
-    /muzik cal, /muzik gec, /muzik kuyruk ...   (11 komut = 1 hak)
+    /muzik cal, /muzik gec, /muzik kuyruk ...   (12 komut = 1 hak)
     /ekonomi bakiye, /mod kick, /xp profil ...
 
 - `td!` ile yazılan komutlar DEĞİŞMEZ (td!cal, td!kick ... aynen çalışır).
-- Sadece `/` tarafı gruplanır. help, ping, surum, avatar gibi çok kullanılanlar tek başına kalır.
+- Sadece `/` tarafı gruplanır. help, ping, surum, avatar tek başına kalır; geri kalan TÜM komutlar gruplanır.
 - main.py komutları yükledikten sonra, slash'lar Discord'a gönderilmeden hemen önce çalışır.
 - Bir şey ters giderse o grup geri alınır ve komutlar eskisi gibi tek başına kalır.
 - Kapatmak için: GRUPLAMA_ACIK = False
@@ -19,31 +19,46 @@ GRUPLAMA_ACIK = True
 
 # (grup adı, açıklama (en fazla 100 karakter), taşınacak komutlar)
 GRUPLAR = [
-    ("muzik", "🎵 Müzik: çal, geç, kuyruk, ses, döngü...",
-     ["cal", "durdur", "devam", "gec", "dur", "kuyruk", "simdi", "ses", "dongu", "karistir", "kuyrukcikar"]),
-    ("ekonomi", "💰 Ekonomi: bakiye, günlük, çalış, market, kumar...",
-     ["bakiye", "gunluk", "calis", "kumar", "gonder", "zenginler", "market", "satinal", "parabas", "slot"]),
+    ("muzik", "🎵 Müzik: çal, geç, kuyruk, ses, döngü, durum...",
+     ["cal", "durdur", "devam", "gec", "dur", "kuyruk", "simdi", "ses", "dongu", "karistir", "kuyrukcikar",
+      "muzikdurum"]),
+    ("ekonomi", "💰 Ekonomi: bakiye, günlük, çalış, market, banka, kumar...",
+     ["bakiye", "gunluk", "calis", "kumar", "gonder", "zenginler", "market", "satinal", "parabas", "slot",
+      "marketekle", "marketsil", "soygun", "banka", "yatir", "bankacek"]),
     ("xp", "📈 Seviye ve XP: seviye, profil, sıralama, ödül roller",
      ["seviye", "siralama", "profil", "seviyepanel", "seviyerol", "seviyerolsil", "seviyeroller",
       "xpver", "xpal", "seviyeayarla", "xpsifirla"]),
-    ("mod", "🛡️ Moderasyon ve güvenlik: kick, ban, uyarı, küfür filtresi...",
+    ("mod", "🛡️ Moderasyon: kick, ban, uyarı, kilit, rol verme...",
      ["kick", "ban", "unban", "timeout", "untimeout", "temizle", "warn", "warnings", "clearwarns", "nick",
-      "rolver", "rolal", "kanalsil", "muafkanal", "muafrol", "muaflar", "kufurekle", "kufursil",
-      "guvenlik", "logkanal", "logkapat", "sicil"]),
-    ("ses", "🔊 Ses odası ayarları: kilit, limit, isim, susturma",
-     ["odakilit", "odalimit", "odaisim", "sessure", "seslider"]),
-    ("sunucu", "⚙️ Sunucu kurulumu: hoş geldin, otorol, paneller, bilgi",
+      "rolver", "rolal", "toplurolver", "sicil", "lock", "unlock", "gizle", "goster", "yavasmod",
+      "kilitherkes", "kilitkaldir", "kanalsil", "snipe"]),
+    ("koruma", "🔒 Güvenlik, log ve küfür filtresi, muaf kanal/rol",
+     ["guvenlik", "logkanal", "logkapat", "kufurekle", "kufursil", "muafkanal", "muafrol", "muaflar"]),
+    ("ses", "🔊 Ses odası ayarları: kilit, limit, isim, özel oda",
+     ["odakilit", "odalimit", "odaisim", "sessure", "seslider", "ozelsesayarla", "ozelsesbitir"]),
+    ("sunucu", "⚙️ Sunucu kurulumu: hoş geldin, otorol, paneller, istatistik, bilgi",
      ["sunucukur", "hosgeldin", "hosgeldinkapat", "hosgeldinmesaj", "otorol", "otorolkapat", "yenihesapgun",
-      "rolpanel", "biletpanel", "biletayar", "serverinfo", "rolbilgi"]),
-    ("etkinlik", "🎉 Çekiliş, anket, hatırlatıcı ve oyunlar",
-     ["cekilis", "cekilisbitir", "cekilisyeniden", "anket", "hatirlat", "tkm", "xox", "sayitahmin", "sihirlitop"]),
-    ("mesaj", "✉️ Mesaj gönderme: say, embed, dm duyuru",
-     ["say", "embed", "fake", "dm", "dmduyuru", "dmkapat", "dmac"]),
-    ("bilgi", "ℹ️ Bilgi ve araçlar: kullanıcı bilgisi, hesap makinesi, çeviri...",
-     ["userinfo", "banner", "emojibuyut", "ozet", "cevir", "hesapla", "oneri"]),
+      "rolpanel", "biletpanel", "biletayar", "serverinfo", "rolbilgi", "kanalbilgi",
+      "istatistikkanal", "istatistikkapat", "onerikanal"]),
+    ("etkinlik", "🎉 Çekiliş, anket, quiz, aktiflik ve oyunlar",
+     ["cekilis", "cekilisbitir", "cekilisyeniden", "anket", "hatirlat", "tkm", "xox", "sayitahmin", "sihirlitop",
+      "zar", "yazitura", "sec", "quizkur", "quizsaat", "quizsor", "quizkaynak", "quizkapat",
+      "aktiflikkur", "aktiflikaralik", "aktiflikkapat", "aktiflik"]),
+    ("mesaj", "✉️ Mesaj: say, embed, dm duyuru, öneri, özel komut",
+     ["say", "embed", "fake", "dm", "dmduyuru", "dmkapat", "dmac", "oneri", "onerionay", "onerired",
+      "ozelkomutekle", "ozelkomutsil", "ozelkomutlar"]),
+    ("bilgi", "ℹ️ Bilgi ve araçlar: kullanıcı, hesap makinesi, çeviri, afk...",
+     ["userinfo", "banner", "emojibuyut", "ozet", "cevir", "hesapla", "uptime", "askolcer", "tersyaz",
+      "sor", "afk", "modul"]),
+    ("yz", "🤖 Yapay zeka: sohbet, çizim, öğretme",
+     ["ai", "sohbet", "ogret", "ogretilenler", "aisil", "aitest", "aisifirla", "ciz", "ciztest"]),
+    ("vip", "💎 VIP sistemi: ver, al, liste, rol, kanal, günlük",
+     ["vipkur", "vipver", "vipal", "viplistesi", "vip", "vipgunluk", "viprol", "vipkanal"]),
 ]
 
 # Gruplanmayan (tek başına kalan) komutlar: help, ping, surum, avatar
+TEK_BASINA = {"help", "ping", "surum", "avatar"}
+# Listede unutulan komutlar otomatik "diger" gruplarına toplanır (25'erli)
 
 
 def grupla(bot, ad, aciklama, komutlar):
@@ -103,6 +118,16 @@ async def kur(bot, g):
     ozet = {}
     for ad, aciklama, komutlar in GRUPLAR:
         tasinan, notlar = grupla(bot, ad, aciklama, komutlar)
+        if tasinan:
+            ozet[ad] = tasinan
+        for n in notlar:
+            print(f"Slash grup '{ad}': {n}")
+    # Listede olmayan, hâlâ üst düzeyde duran slash komutlarını "diger" gruplarına topla
+    kalan = [c.name for c in bot.tree.get_commands()
+             if isinstance(c, app_commands.Command) and c.name not in TEK_BASINA]
+    for i in range(0, len(kalan), 25):
+        ad = "diger" if i == 0 else f"diger{i // 25 + 1}"
+        tasinan, notlar = grupla(bot, ad, "📦 Diğer komutlar", kalan[i:i + 25])
         if tasinan:
             ozet[ad] = tasinan
         for n in notlar:
