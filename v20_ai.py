@@ -76,6 +76,14 @@ NIYET_TABLO = [
     (r"\b(yazi mi tura mi|yazi tura|yazitura)\b", "yazitura", False, 6),
     (r"\b(avatar|avatari|avatarim|avatarimi|profil fotom|profil fotosu)\b", "avatar", False, 4),
     (r"\b(kullanici bilgisi|kullanici bilgileri|hesap bilgim)\b", "userinfo", False, 6),
+    (r"\b(balik tut|balik avla|oltayi at|balik avina)\b", "balik", False, 5),
+    (r"\b(madene git|maden kaz|madencilik yap|kazi yap)\b", "maden", False, 5),
+    (r"\b(envanterim|cantam|esyalarim)\b", "envanter", False, 4),
+    (r"\b(mesaiye git|mesai yap|maasimi al)\b", "mesai", False, 5),
+    (r"\b(kartim|profil kartim|kartimi goster)\b", "kart", False, 4),
+    (r"\b(dolar kac|euro kac|dolar ne kadar|euro ne kadar|doviz kurlari|doviz)\b", "doviz", False, 5),
+    (r"\b(altin kac|altin ne kadar|gram altin|ceyrek altin)\b", "altin", False, 5),
+    (r"\b(dogum gunlerini goster|yaklasan dogum gunleri)\b", "dogumgunleri", False, 5),
 ]
 NIYET_TABLO = [(re.compile(r), k, v, m) for r, k, v, m in NIYET_TABLO]
 CAL_GEREKSIZ = {"cal", "calsana", "calar", "misin", "calabilir", "calsin", "oynat", "bana", "bir", "lutfen", "hadi",
@@ -95,6 +103,16 @@ RE_MOD = [
     (re.compile(r"\b(uyar|uyarsana|uyari ver)\b"), "warn"),
 ]
 RE_TEMIZLE = re.compile(r"\b(\d{1,3}) (mesaji|mesaj) (sil|temizle)\b")
+
+def aktiflik_kanali_mi(mesaj):
+    """Aktiflik kanalıysa bot sohbete her zaman katılır (soru olmasa da)."""
+    try:
+        import v18
+        ayar = v18.veri["sunucu"].get(str(mesaj.guild.id), {}).get("aktiflik", {})
+        return bool(ayar.get("kanal")) and ayar["kanal"] == mesaj.channel.id
+    except Exception:
+        return False
+
 
 DOSYA = "veri_ai.json"
 
@@ -590,7 +608,9 @@ class HizliAI(commands.Cog):
                 print(f"Doğal dil komutu hatası: {e!r}")
 
         # 2) Soru cevaplama: varsayılan olarak HER kanalda soruya benzeyen mesajı yapay zeka cevaplar
-        if ((d.get("herkes", True) or mesaj.channel.id in d["kanallar"]) and len(icerik) >= 6 and soru_mu(icerik, n)
+        sohbet_kanali = aktiflik_kanali_mi(mesaj)
+        if (((d.get("herkes", True) or mesaj.channel.id in d["kanallar"]) and len(icerik) >= 6 and soru_mu(icerik, n)
+                or (sohbet_kanali and len(icerik) >= 3))
                 and simdi - self.soru_kanal.get(mesaj.channel.id, 0) >= SORU_KANAL_BEKLEME):
             self.soru_kanal[mesaj.channel.id] = simdi
             async with mesaj.channel.typing():
@@ -831,6 +851,18 @@ class HizliAI(commands.Cog):
         m = RE_TEMIZLE.search(n)
         if m and kelime_sayisi <= 5:
             return await self.komut_yap(ctx, "temizle", m.group(1))
+
+        # şehir isteyen araçlar: "hava durumu ankara", "ankara hava durumu", "istanbul namaz vakti"
+        m = re.search(r"^(\w+)\s+hava(?: durumu)?$", n) or re.search(r"\bhava(?: durumu)?\s+(?:nasil\s+)?(\w+)$", n)
+        if m and kelime_sayisi <= 4 and m.group(1) not in ("nasil", "durumu", "bugun", "yarin", "ne", "mi"):
+            return await self.komut_yap(ctx, "hava", m.group(1))
+        m = re.search(r"^(\w+)\s+namaz(?: vakti| vakitleri)?$", n) or re.search(r"\bnamaz(?: vakti| vakitleri)?\s+(\w+)$", n)
+        if m and kelime_sayisi <= 4 and m.group(1) not in ("vakti", "vakitleri", "kacta", "ne"):
+            return await self.komut_yap(ctx, "namaz", m.group(1))
+        if kelime_sayisi <= 4 and re.search(r"\b(namaz vakti|namaz vakitleri|ezan ne zaman)\b", n):
+            return await self.komut_yap(ctx, "namaz", "")
+        if kelime_sayisi <= 4 and re.search(r"\bhava durumu\b", n):
+            return await self.komut_yap(ctx, "hava", "")
 
         # kalan basit komutlar (tablo)
         for rx, komut, ses_gerekli, en_fazla in NIYET_TABLO:
