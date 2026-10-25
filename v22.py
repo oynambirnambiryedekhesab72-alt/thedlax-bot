@@ -1093,7 +1093,7 @@ class V22(commands.Cog):
         embed.set_footer(text="Kaynak: Open-Meteo")
         await msg.edit(embed=embed)
 
-    @commands.hybrid_command(name="doviz", aliases=["döviz", "kur"])
+    @commands.hybrid_command(name="doviz", aliases=["döviz", "dolar"])
     async def doviz(self, ctx):
         """Dolar, euro, sterlin kurları"""
         msg = await ctx.send(embed=yukleme_kareleri("💱 Kurlar getiriliyor...", 0x57F287)[0])
