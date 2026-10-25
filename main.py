@@ -15,8 +15,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-SURUM = "2.1"
+SURUM = "2.2"
 DEGISIKLIKLER = (
+    "✨ **v2.2**: doğrulama butonu, raid koruması, balık/maden/meslek/düello, hareketli profil kartı, doğum günü, namaz/hava/döviz/altın, YouTube bildirimi. Hepsi animasyonlu\n"
     "🔀 **Slash menüsü yenilendi**: `/muzik` yaz, listeden `cal`, `durdur`, `gec`... seç (`/mod`, `/ekonomi`, `/xp`... hepsi böyle). `td!` komutları aynı\n"
     "🗣️ **Komutsuz komutlar**: `despacito çal`, `kırmızı araba çiz`, `bakiyem ne kadar`, `ping`... yazman yeterli. Her kanalda sorulara da cevap verir (`td!sohbet`)\n"
     "👁️ **Yapay zeka** artık görsel okuyor, bilmediğini webde arıyor, gerekirse uzun cevap yazıyor (`td!ai`)\n"
@@ -395,7 +396,7 @@ async def setup_hook():
     for kayit in list(hatirlatmalar):
         hatirlatma_baslat(kayit)
     # Modülleri sırayla yükle; biri hata verirse sebebi hem konsola hem `td!modul` komutuna yazılır
-    for ad, giris in (("v15", "yukle"), ("v151", "kur"), ("v18", "kur"), ("v20", "kur"), ("v20_ai", "kur"), ("v21_slash", "kur")):
+    for ad, giris in (("v15", "yukle"), ("v151", "kur"), ("v18", "kur"), ("v20", "kur"), ("v20_ai", "kur"), ("v22", "kur"), ("v21_slash", "kur")):
         try:
             modul = importlib.import_module(ad)
             await getattr(modul, giris)(bot, globals())
@@ -420,7 +421,7 @@ async def modul(ctx):
     """Hangi modüllerin yüklendiğini göster (yetkili)"""
     klasor = os.path.dirname(os.path.abspath(__file__))
     satirlar = []
-    for ad in ("v15", "v151", "v18", "v20", "v20_ai", "v21_slash"):
+    for ad in ("v15", "v151", "v18", "v20", "v20_ai", "v22", "v21_slash"):
         dosya = "dosya var" if os.path.exists(os.path.join(klasor, ad + ".py")) else "DOSYA YOK"
         satirlar.append(f"`{ad}.py` ({dosya}): {MODUL_DURUM.get(ad, '⏳ denenmedi')}")
     kontrol = ", ".join(f"{k} {'✅' if bot.get_command(k) else '❌'}" for k in ("vip", "ciz", "satinal", "ogret"))
