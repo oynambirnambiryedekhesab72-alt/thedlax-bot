@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import ast
@@ -1230,23 +1231,110 @@ YARDIM_ANA = {
 }
 
 
+def yardim_ad_temizle(ad):
+    """Kategori adlarından sürüm etiketlerini ve 'yeni' yazılarını kaldırır: '✨ Yeni (v1.7)' -> '✨ Ekstralar'."""
+    ad = re.sub(r"\s*\(v?\d+(?:\.\d+)*\)", "", ad)
+    ad = re.sub(r"\bv\d+(?:\.\d+)*\s+", "", ad).strip()
+    return {"✨ Yeni": "✨ Ekstralar", "✨ Komutları": "✨ Ek Komutlar"}.get(ad, ad)
+
+
 def yardim_sayfalari():
-    sayfalar = dict(YARDIM_ANA)
+    sayfalar = {}
+
+    def ekle(ad, metin):
+        ad = yardim_ad_temizle(ad)
+        sayfalar[ad] = (sayfalar[ad] + "\n" + metin) if ad in sayfalar else metin
+
+    for ad, metin in YARDIM_ANA.items():
+        ekle(ad, metin)
     if EK_KOMUTLAR:
-        sayfalar["✨ v1.4 Komutları"] = "\n".join(EK_KOMUTLAR)
+        ekle("✨ Ek Komutlar", "\n".join(EK_KOMUTLAR))
     for ad, satirlar in EK_KATEGORILER.items():
-        sayfalar[ad] = "\n".join(satirlar)
+        ekle(ad, "\n".join(satirlar))
     return sayfalar
 
 
-YARDIM_RENKLER = [0x5865F2, 0xEB459E, 0x57F287, 0xFEE75C, 0xED4245, 0x3498DB, 0x9B59B6, 0xE67E22, 0x1ABC9C, 0xF1C40F]
-YARDIM_YUKLEME = [
-    "▱▱▱▱▱▱▱▱▱▱ **%0**",
-    "▰▰▰▱▱▱▱▱▱▱ **%30**",
-    "▰▰▰▰▰▰▱▱▱▱ **%60**",
-    "▰▰▰▰▰▰▰▰▱▱ **%85**",
-    "▰▰▰▰▰▰▰▰▰▰ **%100**",
-]
+# ---- Yardım menüsü: mavi çerçeve, hareketli banner, animasyonlu tuşlar ----
+YARDIM_MAVI = 0x3498DB
+YARDIM_YUKLEME = ["▱▱▱▱▱▱▱▱▱▱ **%0**", "▰▰▰▱▱▱▱▱▱▱ **%30**", "▰▰▰▰▰▰▱▱▱▱ **%60**",
+                  "▰▰▰▰▰▰▰▰▱▱ **%85**", "▰▰▰▰▰▰▰▰▰▰ **%100**"]
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_VAR = True
+except Exception:
+    PIL_VAR = False
+_banner_onbellek = {}
+
+
+def _yazi_tipi(boyut, kalin=True):
+    for yol in (("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf", "arialbd.ttf") if kalin
+                else ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf", "arial.ttf")):
+        try:
+            return ImageFont.truetype(yol, boyut)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(boyut)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def yardim_banner_olustur(ad="THEDLAX BOT", alt="Yardım Merkezi"):
+    """Mavi çerçeveli, sürekli aşağı yukarı süzülen GIF banner (sonsuz döngü). Ayrı thread'de çalışır."""
+    import math
+    import io as _io
+    W, H, N = 760, 190, 24
+    taban = Image.new("RGB", (W, H))
+    px = taban.load()
+    for y in range(H):
+        for x in range(W):
+            t = y / H * 0.7 + x / W * 0.3
+            px[x, y] = (int(14 + 22 * t), int(30 + 60 * t), int(70 + 110 * t))
+    boyut = 56
+    f_baslik = _yazi_tipi(boyut)
+    olcu = ImageDraw.Draw(taban)
+    while olcu.textlength(ad, font=f_baslik) > W - 90 and boyut > 22:      # uzun başlık sığsın
+        boyut -= 4
+        f_baslik = _yazi_tipi(boyut)
+    f_alt = _yazi_tipi(24, False)
+    sekiller = [(60, 50, 10, 0.0), (130, 140, 7, 1.3), (230, 40, 6, 2.4), (540, 150, 8, 0.8),
+                (620, 45, 12, 2.0), (700, 130, 7, 3.4), (330, 160, 5, 4.2), (440, 30, 5, 5.0)]
+    kareler = []
+    for i in range(N):
+        faz = 2 * math.pi * i / N
+        kare = taban.convert("RGBA")
+        kat = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(kat)
+        for x, taban_y, r, f in sekiller:                       # süzülen baloncuklar
+            y = taban_y + 16 * math.sin(faz + f)
+            d.ellipse((x - r, y - r, x + r, y + r), fill=(140, 200, 255, 110))
+        by = int((H + 30) * (0.5 + 0.5 * math.sin(faz))) - 15      # aşağı yukarı gezen parlak şerit
+        d.rectangle((0, by - 9, W, by + 9), fill=(255, 255, 255, 26))
+        kare = Image.alpha_composite(kare, kat).convert("RGB")
+        c = ImageDraw.Draw(kare)
+        c.text(((W - c.textlength(ad, font=f_baslik)) / 2, 42 + 8 * math.sin(faz)), ad, font=f_baslik, fill=(255, 255, 255))
+        c.text(((W - c.textlength(alt, font=f_alt)) / 2, 118 + 5 * math.sin(faz + math.pi)), alt, font=f_alt, fill=(190, 225, 255))
+        parlak = int(60 + 40 * (0.5 + 0.5 * math.sin(faz)))
+        c.rounded_rectangle((6, 6, W - 7, H - 7), radius=26, outline=(52 + parlak // 2, 152 + parlak // 2, 255), width=6)
+        kareler.append(kare)
+    palet = kareler[N // 2].quantize(colors=200, dither=0)
+    kareler = [k.quantize(palette=palet, dither=0) for k in kareler]
+    cikti = _io.BytesIO()
+    kareler[0].save(cikti, format="GIF", save_all=True, append_images=kareler[1:], duration=70, loop=0, disposal=1)
+    return cikti.getvalue()
+
+
+async def yardim_banner_al(ad="THEDLAX BOT", alt="Yardım Merkezi"):
+    if not PIL_VAR:
+        return None
+    anahtar = (ad, alt)
+    if anahtar not in _banner_onbellek:
+        try:
+            _banner_onbellek[anahtar] = await asyncio.to_thread(yardim_banner_olustur, ad, alt)
+        except Exception as e:
+            print(f"Banner oluşturulamadı: {e!r}")
+            _banner_onbellek[anahtar] = None
+    return _banner_onbellek[anahtar]
 
 
 def yardim_bol(metin, sinir=1000):
@@ -1263,72 +1351,66 @@ def yardim_bol(metin, sinir=1000):
 
 
 def yardim_simge_ad(ad):
-    """'🎵 Müzik' -> ('🎵', 'Müzik'). Başta simge yoksa (None, ad)."""
     ilk, _, geri = ad.partition(" ")
     if geri and not any(c.isalnum() for c in ilk):
         return ilk, geri
     return None, ad
 
 
-def yardim_ana_embed(sayfalar, bot_kullanici=None):
+def yardim_ana_embed(sayfalar, bot_kullanici=None, banner=False):
     satirlar = []
     for ad in sayfalar:
         simge, duz = yardim_simge_ad(ad)
         satirlar.append(f"{simge or '▫️'} **{duz}**")
     embed = discord.Embed(
-        title=f"📖 THEDLAX v{SURUM} • Yardım Merkezi",
-        description=(
-            "Aşağıdaki menüden bir **kategori** seç, ◀ ▶ ile sayfaları gez.\n\n"
-            + "\n".join(satirlar)
-        )[:4000],
-        color=discord.Color.blurple(),
-    )
+        title="📖 Yardım Merkezi",
+        description=("Aşağıdaki menüden bir **kategori** seç, ◀ ▶ ile sayfaları gez.\n\n" + "\n".join(satirlar))[:4000],
+        color=YARDIM_MAVI)
     embed.add_field(
         name="⚡ Nasıl kullanılır?",
         value=("• Slash: `/muzik` yaz → listeden **cal**, **gec**... seç\n"
                "• Prefix: `td!cal despacito`\n"
-               "• Komutsuz: `despacito çal`, `kırmızı araba çiz`, `bakiyem ne kadar`"),
-        inline=False,
-    )
+               "• Komutsuz: `despacito çal`, `kırmızı araba çiz`, `bakiyem ne kadar`"), inline=False)
     embed.add_field(name="📊 İstatistik", value=f"**{len(bot.commands)}** komut • **{len(sayfalar)}** kategori", inline=True)
     embed.add_field(name="ℹ️ İpucu", value="`< >` zorunlu, `[ ]` isteğe bağlı\nSüre: `30s` `5m` `2h` `1d`", inline=True)
-    if bot_kullanici is not None:
-        embed.set_thumbnail(url=bot_kullanici.display_avatar.url)
+    if banner:
+        embed.set_image(url="attachment://yardim.gif")
     embed.set_footer(text="Yetki gereken komutlarda ilgili yetkin olmalı.")
     return embed
 
 
 class YardimSecim(discord.ui.Select):
-    def __init__(self, sayfalar):
-        self.liste = list(sayfalar.items())
+    def __init__(self, parca, baslangic, sira, toplam):
+        self.baslangic = baslangic
         secenekler = []
-        for i, (ad, _) in enumerate(self.liste[:25]):
+        for i, (ad, _) in enumerate(parca):
             simge, duz = yardim_simge_ad(ad)
             try:
-                secenekler.append(discord.SelectOption(label=duz[:100], value=str(i), emoji=simge))
+                secenekler.append(discord.SelectOption(label=duz[:100], value=str(baslangic + i), emoji=simge))
             except Exception:
-                secenekler.append(discord.SelectOption(label=ad[:100], value=str(i)))
-        super().__init__(placeholder="📂 Kategori seç...", options=secenekler, row=0)
+                secenekler.append(discord.SelectOption(label=ad[:100], value=str(baslangic + i)))
+        yazi = "📂 Kategori seç..." if toplam == 1 else f"📂 Kategori seç ({sira + 1}/{toplam})"
+        super().__init__(placeholder=yazi, options=secenekler, row=sira)
 
     async def callback(self, interaction):
         v = self.view
         v.kat = int(self.values[0])
         v.sayfa = 0
-        await v.goster(interaction, animasyon=True)
+        await v.goster(interaction)
 
 
 class YardimView(discord.ui.View):
-    def __init__(self, yazar_id, sayfalar, bot_kullanici=None):
+    def __init__(self, yazar_id, sayfalar, bot_kullanici=None, banner=False):
         super().__init__(timeout=180)
-        self.yazar_id = yazar_id
-        self.sayfalar = sayfalar
-        self.bot_kullanici = bot_kullanici
+        self.yazar_id, self.sayfalar, self.bot_kullanici, self.banner = yazar_id, sayfalar, bot_kullanici, banner
         self.liste = list(sayfalar.items())
         self.parcalar = {}
-        self.kat = None       # None = ana sayfa
+        self.kat = None
         self.sayfa = 0
         self.mesaj = None
-        self.add_item(YardimSecim(sayfalar))
+        parcalar = [self.liste[i:i + 25] for i in range(0, len(self.liste), 25)][:4]
+        for sira, parca in enumerate(parcalar):
+            self.add_item(YardimSecim(parca, sira * 25, sira, len(parcalar)))
         self.butonlari_ayarla()
 
     def parca(self, kat):
@@ -1342,49 +1424,54 @@ class YardimView(discord.ui.View):
         self.ileri.disabled = not (coklu and self.sayfa < len(self.parca(self.kat)) - 1)
         self.ana.disabled = self.kat is None
 
-    def embed_yap(self):
-        if self.kat is None:
-            return yardim_ana_embed(self.sayfalar, self.bot_kullanici)
-        ad, _ = self.liste[self.kat]
-        parcalar = self.parca(self.kat)
-        embed = discord.Embed(title=ad, description=parcalar[self.sayfa], color=YARDIM_RENKLER[self.kat % len(YARDIM_RENKLER)])
-        if self.bot_kullanici is not None:
-            embed.set_thumbnail(url=self.bot_kullanici.display_avatar.url)
-        embed.set_footer(text=f"Sayfa {self.sayfa + 1}/{len(parcalar)} • THEDLAX v{SURUM} • 🏠 ile ana sayfaya dön")
+    def _gorsel(self, embed):
+        if self.banner:
+            embed.set_image(url="attachment://yardim.gif")
         return embed
 
-    async def goster(self, interaction, animasyon=False):
-        self.butonlari_ayarla()
-        if animasyon:
-            # kısa geçiş animasyonu: önce yükleme çubuğu, sonra sayfa
-            renk = YARDIM_RENKLER[(self.kat or 0) % len(YARDIM_RENKLER)]
-            ad = self.liste[self.kat][0] if self.kat is not None else "Ana sayfa"
-            await interaction.response.edit_message(
-                embed=discord.Embed(title=ad, description=f"⏳ Yükleniyor...\n{YARDIM_YUKLEME[1]}", color=renk), view=self)
-            await asyncio.sleep(0.35)
-            await interaction.edit_original_response(
-                embed=discord.Embed(title=ad, description=f"⏳ Yükleniyor...\n{YARDIM_YUKLEME[3]}", color=renk), view=self)
-            await asyncio.sleep(0.35)
-            await interaction.edit_original_response(embed=self.embed_yap(), view=self)
-        else:
-            await interaction.response.edit_message(embed=self.embed_yap(), view=self)
+    def embed_yap(self):
+        if self.kat is None:
+            return yardim_ana_embed(self.sayfalar, self.bot_kullanici, self.banner)
+        ad, _ = self.liste[self.kat]
+        parcalar = self.parca(self.kat)
+        embed = discord.Embed(title=ad, description=parcalar[self.sayfa], color=YARDIM_MAVI)
+        embed.set_footer(text=f"Sayfa {self.sayfa + 1}/{len(parcalar)} • 🏠 ile ana sayfaya dön")
+        return self._gorsel(embed)
 
-    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
+    async def goster(self, interaction):
+        """Tuşa basınca: kategoriye özel hareketli banner + sayfa anında değişir."""
+        self.butonlari_ayarla()
+        if self.kat is None:
+            ad, alt = "THEDLAX BOT", "Yardım Merkezi"
+        else:
+            ad, alt = yardim_simge_ad(self.liste[self.kat][0])[1], "THEDLAX BOT • Yardım"
+        try:
+            await interaction.response.defer()
+            banner = await yardim_banner_al(ad, alt) if self.banner else None
+            if banner:
+                await interaction.edit_original_response(
+                    embed=self.embed_yap(), view=self, attachments=[discord.File(io.BytesIO(banner), filename="yardim.gif")])
+            else:
+                await interaction.edit_original_response(embed=self.embed_yap(), view=self)
+        except discord.HTTPException as e:
+            print(f"Help güncelleme hatası: {e!r}")
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=4)
     async def geri(self, interaction, button):
         self.sayfa = max(0, self.sayfa - 1)
         await self.goster(interaction)
 
-    @discord.ui.button(emoji="🏠", label="Ana sayfa", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(emoji="🏠", label="Ana sayfa", style=discord.ButtonStyle.primary, row=4)
     async def ana(self, interaction, button):
         self.kat, self.sayfa = None, 0
-        await self.goster(interaction, animasyon=True)
+        await self.goster(interaction)
 
-    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=4)
     async def ileri(self, interaction, button):
         self.sayfa += 1
         await self.goster(interaction)
 
-    @discord.ui.button(emoji="✖️", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(emoji="✖️", style=discord.ButtonStyle.danger, row=4)
     async def kapat(self, interaction, button):
         self.stop()
         try:
@@ -1410,20 +1497,14 @@ class YardimView(discord.ui.View):
 
 @bot.hybrid_command(name="help", aliases=["yardim", "yardım", "komutlar"])
 async def help_komutu(ctx):
-    """Tüm komutları göster (animasyonlu menü)"""
+    """Tüm komutları göster (hareketli menü)"""
     sayfalar = yardim_sayfalari()
-    view = YardimView(ctx.author.id, sayfalar, bot.user)
-    # açılış animasyonu: yükleme çubuğu dolar, sonra menü açılır
-    yukleme = discord.Embed(title="📖 Yardım menüsü hazırlanıyor...", description=YARDIM_YUKLEME[0], color=discord.Color.blurple())
-    view.mesaj = await ctx.send(embed=yukleme)
-    try:
-        for kare in YARDIM_YUKLEME[1:]:
-            await asyncio.sleep(0.6)
-            yukleme.description = kare
-            await view.mesaj.edit(embed=yukleme)
-        await asyncio.sleep(0.4)
-        await view.mesaj.edit(embed=view.embed_yap(), view=view)
-    except discord.HTTPException:
+    banner = await yardim_banner_al()
+    view = YardimView(ctx.author.id, sayfalar, bot.user, banner=bool(banner))
+    if banner:
+        view.mesaj = await ctx.send(embed=view.embed_yap(), view=view,
+                                    file=discord.File(io.BytesIO(banner), filename="yardim.gif"))
+    else:
         view.mesaj = await ctx.send(embed=view.embed_yap(), view=view)
 
 
