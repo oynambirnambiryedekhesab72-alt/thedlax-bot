@@ -340,7 +340,7 @@ def resim_uret(tarif):
         son = kod
     if "ucretsiz" in RESIM_SAGLAYICI:
         bayt, kod, _ = resim_ucretsiz(tarif)
-        return (bayt, "", "Flux") if bayt else (None, kod, "")
+        return (bayt, "", "Ücretsiz servis (Pollinations)") if bayt else (None, kod, "")
     return None, son, ""
 
 
