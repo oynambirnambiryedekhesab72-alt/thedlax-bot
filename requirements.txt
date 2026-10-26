@@ -1,6 +1,0 @@
-discord.py[voice]
-yt-dlp[default]
-PyNaCl
-imageio-ffmpeg
-aiohttp
-pillow
