@@ -1,0 +1,26 @@
+name: Botu 7/24 Calistir
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Her 5 dakikada bir tetikler
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodlari Indir
+        uses: actions/checkout@v3
+
+      - name: Python Yukle
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Kutuphaneleri Yukle
+        run: |
+          pip install -r requirements.txt
+
+      - name: Botu Baslat
+        run: |
+          python main.py
